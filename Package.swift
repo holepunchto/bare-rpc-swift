@@ -8,7 +8,7 @@ let package = Package(
     .library(name: "BareRPC", targets: ["BareRPC"])
   ],
   dependencies: [
-    .package(path: "../compact-encoding-swift")
+    .package(url: "https://github.com/holepunchto/compact-encoding-swift", branch: "main")
   ],
   targets: [
     .target(

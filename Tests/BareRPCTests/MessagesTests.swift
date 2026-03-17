@@ -1,75 +1,76 @@
 // Tests/BareRPCTests/MessagesTests.swift
-import XCTest
+import Testing
 @testable import BareRPC
+import Foundation
 
-final class MessagesTests: XCTestCase {
+@Suite struct MessagesTests {
 
   // --- Request encoding/decoding ---
 
-  func testRequestRoundtrip() throws {
+  @Test func requestRoundtrip() throws {
     let payload = Data([1, 2, 3, 4])
     let frame = Messages.encodeRequest(id: 5, command: 1, data: payload)
     let msg = try Messages.decodeFrame(frame)
-    guard case .request(let req) = msg else { XCTFail("Expected request"); return }
-    XCTAssertEqual(req.id, 5)
-    XCTAssertEqual(req.command, 1)
-    XCTAssertEqual(req.data, payload)
+    guard case .request(let req) = msg else { Issue.record("Expected request"); return }
+    #expect(req.id == 5)
+    #expect(req.command == 1)
+    #expect(req.data == payload)
   }
 
-  func testEventRoundtrip() throws {
+  @Test func eventRoundtrip() throws {
     let payload = Data([0xAB])
     let frame = Messages.encodeEvent(command: 2, data: payload)
     let msg = try Messages.decodeFrame(frame)
-    guard case .request(let req) = msg else { XCTFail("Expected request"); return }
-    XCTAssertEqual(req.id, 0)    // id=0 is fire-and-forget
-    XCTAssertEqual(req.command, 2)
-    XCTAssertEqual(req.data, payload)
+    guard case .request(let req) = msg else { Issue.record("Expected request"); return }
+    #expect(req.id == 0)
+    #expect(req.command == 2)
+    #expect(req.data == payload)
   }
 
-  func testRequestWithNilData() throws {
+  @Test func requestWithNilData() throws {
     let frame = Messages.encodeRequest(id: 1, command: 3, data: nil)
     let msg = try Messages.decodeFrame(frame)
-    guard case .request(let req) = msg else { XCTFail("Expected request"); return }
-    XCTAssertNil(req.data)
+    guard case .request(let req) = msg else { Issue.record("Expected request"); return }
+    #expect(req.data == nil)
   }
 
   // --- Response encoding/decoding ---
 
-  func testSuccessResponseRoundtrip() throws {
+  @Test func successResponseRoundtrip() throws {
     let payload = Data([10, 20, 30])
     let frame = Messages.encodeResponse(id: 7, data: payload)
     let msg = try Messages.decodeFrame(frame)
-    guard case .response(let resp) = msg else { XCTFail("Expected response"); return }
-    XCTAssertEqual(resp.id, 7)
-    guard case .success(let data) = resp.result else { XCTFail("Expected success"); return }
-    XCTAssertEqual(data, payload)
+    guard case .response(let resp) = msg else { Issue.record("Expected response"); return }
+    #expect(resp.id == 7)
+    guard case .success(let data) = resp.result else { Issue.record("Expected success"); return }
+    #expect(data == payload)
   }
 
-  func testSuccessResponseWithNilData() throws {
+  @Test func successResponseWithNilData() throws {
     let frame = Messages.encodeResponse(id: 3, data: nil)
     let msg = try Messages.decodeFrame(frame)
-    guard case .response(let resp) = msg else { XCTFail("Expected response"); return }
-    guard case .success(let data) = resp.result else { XCTFail("Expected success"); return }
-    XCTAssertNil(data)
+    guard case .response(let resp) = msg else { Issue.record("Expected response"); return }
+    guard case .success(let data) = resp.result else { Issue.record("Expected success"); return }
+    #expect(data == nil)
   }
 
-  func testErrorResponseRoundtrip() throws {
+  @Test func errorResponseRoundtrip() throws {
     let frame = Messages.encodeErrorResponse(id: 4, message: "Not found", code: "NOT_FOUND")
     let msg = try Messages.decodeFrame(frame)
-    guard case .response(let resp) = msg else { XCTFail("Expected response"); return }
-    XCTAssertEqual(resp.id, 4)
+    guard case .response(let resp) = msg else { Issue.record("Expected response"); return }
+    #expect(resp.id == 4)
     guard case .remoteError(let message, let code, _) = resp.result else {
-      XCTFail("Expected remoteError"); return
+      Issue.record("Expected remoteError"); return
     }
-    XCTAssertEqual(message, "Not found")
-    XCTAssertEqual(code, "NOT_FOUND")
+    #expect(message == "Not found")
+    #expect(code == "NOT_FOUND")
   }
 
   // Frame prefix correctness: first 4 bytes must be little-endian body length
-  func testFramePrefixIsBodyLength() throws {
+  @Test func framePrefixIsBodyLength() throws {
     let payload = Data([1, 2, 3])
     let frame = Messages.encodeRequest(id: 1, command: 0, data: payload)
     let bodyLen = UInt32(frame[0]) | (UInt32(frame[1]) << 8) | (UInt32(frame[2]) << 16) | (UInt32(frame[3]) << 24)
-    XCTAssertEqual(Int(bodyLen), frame.count - 4)
+    #expect(Int(bodyLen) == frame.count - 4)
   }
 }

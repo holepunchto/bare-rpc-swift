@@ -1,15 +1,15 @@
 // Tests/BareRPCTests/RPCErrorTests.swift
-import XCTest
+import Testing
 @testable import BareRPC
 
-final class RPCErrorTests: XCTestCase {
-  func testMissingResponseIsError() {
-    let error: Error = RPCError.missingResponse
-    XCTAssertTrue(error is RPCError)
+@Suite struct RPCErrorTests {
+  @Test func missingResponseIsError() {
+    let error: any Error = RPCError.missingResponse
+    #expect(error is RPCError)
   }
 
-  func testStreamingNotSupportedIsError() {
-    let error: Error = RPCError.streamingNotSupported
-    XCTAssertTrue(error is RPCError)
+  @Test func streamingNotSupportedIsError() {
+    let error: any Error = RPCError.streamingNotSupported
+    #expect(error is RPCError)
   }
 }

@@ -6,17 +6,26 @@ public protocol RPCDelegate: AnyObject {
 }
 
 public class RPC {
-  public weak var delegate: RPCDelegate?
-  public var onRequest: ((IncomingRequest) async -> Void)?
-
   private let _lock = NSLock()
   private var _buffer = Data()
   private var _nextId = 1
   private var _pending: [Int: CheckedContinuation<Data?, Error>] = [:]
+  private weak var _delegate: RPCDelegate?
+  private var _onRequest: ((IncomingRequest) async -> Void)?
+
+  public weak var delegate: RPCDelegate? {
+    get { _lock.withLock { _delegate } }
+    set { _lock.withLock { _delegate = newValue } }
+  }
+
+  public var onRequest: ((IncomingRequest) async -> Void)? {
+    get { _lock.withLock { _onRequest } }
+    set { _lock.withLock { _onRequest = newValue } }
+  }
 
   public init(delegate: RPCDelegate? = nil, onRequest: ((IncomingRequest) async -> Void)? = nil) {
-    self.delegate = delegate
-    self.onRequest = onRequest
+    self._delegate = delegate
+    self._onRequest = onRequest
   }
 
   // MARK: - Outgoing
@@ -25,7 +34,7 @@ public class RPC {
   public func request(_ command: Int, data: Data? = nil) async throws -> Data? {
     let id: Int = _lock.withLock {
       let id = _nextId
-      _nextId += 1
+      _nextId = (_nextId % 0xFFFF_FFFE) + 1  // wrap at 2^32-1, matching JS reference
       return id
     }
     let frame = Messages.encodeRequest(id: id, command: command, data: data)

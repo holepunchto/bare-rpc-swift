@@ -73,4 +73,37 @@ import Foundation
     let bodyLen = UInt32(frame[0]) | (UInt32(frame[1]) << 8) | (UInt32(frame[2]) << 16) | (UInt32(frame[3]) << 24)
     #expect(Int(bodyLen) == frame.count - 4)
   }
+
+  // Error response preserves errno value
+  @Test func errorResponseErrnoRoundtrip() throws {
+    let frame = Messages.encodeErrorResponse(id: 9, message: "fail", code: "ENOENT", errno: 42)
+    let msg = try Messages.decodeFrame(frame)
+    guard case .response(let resp) = msg else { Issue.record("Expected response"); return }
+    guard case .remoteError(let message, let code, let errno) = resp.result else {
+      Issue.record("Expected remoteError"); return
+    }
+    #expect(message == "fail")
+    #expect(code == "ENOENT")
+    #expect(errno == 42)
+  }
+
+  // Unknown message type throws unknownMessageType
+  @Test func unknownMessageTypeThrows() throws {
+    // Build a frame with type=99 (unknown)
+    var body = Data()
+    // compact-encode type=99: single byte since < 128
+    body.append(99)
+    // Prepend 4-byte LE length
+    let len = UInt32(body.count)
+    var frame = Data(count: 4)
+    frame[0] = UInt8(len & 0xFF)
+    frame[1] = UInt8((len >> 8) & 0xFF)
+    frame[2] = UInt8((len >> 16) & 0xFF)
+    frame[3] = UInt8((len >> 24) & 0xFF)
+    frame.append(body)
+
+    #expect(throws: MessagesError.self) {
+      _ = try Messages.decodeFrame(frame)
+    }
+  }
 }

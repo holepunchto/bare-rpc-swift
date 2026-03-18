@@ -30,7 +30,6 @@ public class RPC {
   private var _buffer = Data()
   private var _nextId: UInt = 1
   private var _pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
-  private var _dispatching = false
 
   /// The transport delegate responsible for sending framed data.
   public weak var delegate: RPCDelegate?
@@ -100,26 +99,20 @@ public class RPC {
   /// - Parameter data: Raw bytes from the transport.
   public func receive(_ data: Data) {
     _buffer.append(data)
-    guard !_dispatching else { return }
-    _dispatching = true
-    defer { _dispatching = false }
-    while true {
-      var frames: [Data] = []
-      while _buffer.count >= 4 {
-        let bodyLen = Int(
-          UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
-            | (UInt32(_buffer[_buffer.startIndex + 2]) << 16)
-            | (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
-        )
-        let frameLen = 4 + bodyLen
-        guard _buffer.count >= frameLen else { break }
-        frames.append(Data(_buffer.prefix(frameLen)))
-        _buffer.removeFirst(frameLen)
-      }
-      guard !frames.isEmpty else { break }
-      for frame in frames {
-        _dispatchFrame(frame)
-      }
+    var frames: [Data] = []
+    while _buffer.count >= 4 {
+      let bodyLen = Int(
+        UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
+          | (UInt32(_buffer[_buffer.startIndex + 2]) << 16)
+          | (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
+      )
+      let frameLen = 4 + bodyLen
+      guard _buffer.count >= frameLen else { break }
+      frames.append(Data(_buffer.prefix(frameLen)))
+      _buffer.removeFirst(frameLen)
+    }
+    for frame in frames {
+      _dispatchFrame(frame)
     }
   }
 

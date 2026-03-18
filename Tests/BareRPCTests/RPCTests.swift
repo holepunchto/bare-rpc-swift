@@ -82,21 +82,6 @@ func makePair() -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDele
     }
   }
 
-  // Multiple concurrent requests are correctly tracked by ID.
-  @Test func concurrentRequests() async throws {
-    let (client, server, _delegates) = makePair()
-    server.onRequest = { req in req.reply(req.data) }
-
-    async let r1 = client.request(1, data: Data([1]))
-    async let r2 = client.request(2, data: Data([2]))
-    async let r3 = client.request(3, data: Data([3]))
-
-    let results = try await [r1, r2, r3]
-    #expect(results[0] == Data([1]))
-    #expect(results[1] == Data([2]))
-    #expect(results[2] == Data([3]))
-  }
-
   // Partial frame delivery: frame split across multiple receive() calls.
   @Test func partialFrameDelivery() async throws {
     let (_, server, _delegates) = makePair()

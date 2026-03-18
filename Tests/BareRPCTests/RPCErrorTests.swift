@@ -1,5 +1,6 @@
 // Tests/BareRPCTests/RPCErrorTests.swift
 import Testing
+
 @testable import BareRPC
 
 @Suite struct RPCErrorTests {

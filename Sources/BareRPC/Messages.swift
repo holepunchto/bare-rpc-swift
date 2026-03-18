@@ -1,6 +1,6 @@
+import CompactEncoding
 // Sources/BareRPC/Messages.swift
 import Foundation
-import CompactEncoding
 
 // MARK: - Decoded message types
 
@@ -110,7 +110,9 @@ public enum Messages {
   ///   - code: Machine-readable error code string.
   ///   - errno: Numeric error number (default 0).
   /// - Returns: A complete framed message ready to send.
-  public static func encodeErrorResponse(id: UInt, message: String, code: String, errno: Int = 0) -> Data {
+  public static func encodeErrorResponse(id: UInt, message: String, code: String, errno: Int = 0)
+    -> Data
+  {
     var state = State()
     Primitive.UInt().preencode(&state, 2)
     Primitive.UInt().preencode(&state, id)
@@ -144,8 +146,8 @@ public enum Messages {
   public static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
     var state = State(frame)
     _ = try Primitive.UInt32().decode(&state)
-    let type_ = try Primitive.UInt().decode(&state)
-    switch type_ {
+    let messageType = try Primitive.UInt().decode(&state)
+    switch messageType {
     case 1: return try decodeRequest(&state).map { .request($0) }
     case 2: return try decodeResponse(&state).map { .response($0) }
     default: return nil
@@ -154,7 +156,9 @@ public enum Messages {
 
   // MARK: Private helpers
 
-  private static func preencodeRequestBody(_ state: inout State, id: UInt, command: UInt, data: Data?) {
+  private static func preencodeRequestBody(
+    _ state: inout State, id: UInt, command: UInt, data: Data?
+  ) {
     Primitive.UInt().preencode(&state, 1)
     Primitive.UInt().preencode(&state, id)
     Primitive.UInt().preencode(&state, command)
@@ -162,7 +166,8 @@ public enum Messages {
     preencodeBuffer(&state, data ?? Data())
   }
 
-  private static func encodeRequestBody(_ state: inout State, id: UInt, command: UInt, data: Data?) {
+  private static func encodeRequestBody(_ state: inout State, id: UInt, command: UInt, data: Data?)
+  {
     try! Primitive.UInt().encode(&state, 1)
     try! Primitive.UInt().encode(&state, id)
     try! Primitive.UInt().encode(&state, command)
@@ -211,9 +216,9 @@ public enum Messages {
 
   /// Decode a request body (type == 1). Returns nil for streaming requests.
   private static func decodeRequest(_ state: inout State) throws -> RequestMessage? {
-    let id      = try Primitive.UInt().decode(&state)
+    let id = try Primitive.UInt().decode(&state)
     let command = try Primitive.UInt().decode(&state)
-    let stream  = try Primitive.UInt().decode(&state)
+    let stream = try Primitive.UInt().decode(&state)
     guard stream == 0 else { return nil }
     let raw = try decodeBuffer(&state)
     return RequestMessage(id: id, command: command, data: raw.isEmpty ? nil : raw)
@@ -221,15 +226,16 @@ public enum Messages {
 
   /// Decode a response body (type == 2). Returns nil for streaming responses.
   private static func decodeResponse(_ state: inout State) throws -> ResponseMessage? {
-    let id     = try Primitive.UInt().decode(&state)
-    let isErr  = try Primitive.Bool().decode(&state)
+    let id = try Primitive.UInt().decode(&state)
+    let isErr = try Primitive.Bool().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
     if stream != 0 { return nil }
     if isErr {
       let message = try Primitive.UTF8().decode(&state)
-      let code    = try Primitive.UTF8().decode(&state)
-      let errno_  = try Primitive.Int().decode(&state)
-      return ResponseMessage(id: id, result: .remoteError(message: message, code: code, errno: errno_))
+      let code = try Primitive.UTF8().decode(&state)
+      let errnoValue = try Primitive.Int().decode(&state)
+      return ResponseMessage(
+        id: id, result: .remoteError(message: message, code: code, errno: errnoValue))
     }
     let raw = try decodeBuffer(&state)
     return ResponseMessage(id: id, result: .success(raw.isEmpty ? nil : raw))

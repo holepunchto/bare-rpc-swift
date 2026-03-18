@@ -20,6 +20,6 @@ let package = Package(
       name: "BareRPCTests",
       dependencies: ["BareRPC"],
       path: "Tests/BareRPCTests"
-    )
+    ),
   ]
 )

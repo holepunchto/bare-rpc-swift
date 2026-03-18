@@ -125,10 +125,9 @@ public class RPC {
       _buffer.append(data)
       while _buffer.count >= 4 {
         let bodyLen = Int(
-          UInt32(_buffer[_buffer.startIndex]) |
-          (UInt32(_buffer[_buffer.startIndex + 1]) << 8) |
-          (UInt32(_buffer[_buffer.startIndex + 2]) << 16) |
-          (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
+          UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
+            | (UInt32(_buffer[_buffer.startIndex + 2]) << 16)
+            | (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
         )
         let frameLen = 4 + bodyLen
         guard _buffer.count >= frameLen else { break }

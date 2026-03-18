@@ -41,6 +41,7 @@ public class IncomingRequest {
   ///   - errno: Numeric error number (defaults to 0).
   public func reject(_ message: String, code: String? = nil, errno: Int = 0) {
     guard let rpc = _rpc else { return }
-    rpc._sendData(Messages.encodeErrorResponse(id: id, message: message, code: code ?? "ERROR", errno: errno))
+    rpc._sendData(
+      Messages.encodeErrorResponse(id: id, message: message, code: code ?? "ERROR", errno: errno))
   }
 }

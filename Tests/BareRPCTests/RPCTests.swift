@@ -1,7 +1,8 @@
+import Foundation
 // Tests/BareRPCTests/RPCTests.swift
 import Testing
+
 @testable import BareRPC
-import Foundation
 
 // In-memory transport: connects two RPC instances so bytes flow directly between them.
 class PipeDelegate: RPCDelegate {
@@ -149,11 +150,11 @@ func makePair() -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDele
   // Streaming request is silently discarded — no rejection sent, no onRequest called.
   @Test func streamingRequestSilentlyDiscarded() async throws {
     var body = Data()
-    body.append(1)    // type = 1 (request)
-    body.append(5)    // id = 5
-    body.append(1)    // command = 1
-    body.append(1)    // stream = 1 (non-zero — streaming)
-    body.append(0)    // data length = 0
+    body.append(1)  // type = 1 (request)
+    body.append(5)  // id = 5
+    body.append(1)  // command = 1
+    body.append(1)  // stream = 1 (non-zero — streaming)
+    body.append(0)  // data length = 0
 
     let captureDelegate = CaptureDelegate()
     let lock = NSLock()
@@ -171,11 +172,11 @@ func makePair() -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDele
   // Streaming event (id=0, stream!=0) is silently discarded.
   @Test func streamingEventSilentlyDiscarded() async throws {
     var body = Data()
-    body.append(1)    // type = 1 (request)
-    body.append(0)    // id = 0 (event)
-    body.append(1)    // command = 1
-    body.append(1)    // stream = 1 (non-zero)
-    body.append(0)    // data length = 0
+    body.append(1)  // type = 1 (request)
+    body.append(0)  // id = 0 (event)
+    body.append(1)  // command = 1
+    body.append(1)  // stream = 1 (non-zero)
+    body.append(0)  // data length = 0
 
     let captureDelegate = CaptureDelegate()
     let lock = NSLock()
@@ -213,7 +214,7 @@ func makePair() -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDele
     // will be buffered until complete — so instead, provide a valid-length
     // frame with corrupt compact-encoded content
     var body = Data()
-    body.append(1)     // type = 1 (request)
+    body.append(1)  // type = 1 (request)
     body.append(0xFE)  // start of a varint that needs more bytes
     // truncated — decoding will fail
 

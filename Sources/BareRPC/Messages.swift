@@ -3,49 +3,47 @@ import Foundation
 
 // MARK: - Decoded message types
 
-public enum DecodedMessage {
+enum DecodedMessage {
   case request(RequestMessage)
   case response(ResponseMessage)
 }
 
-public struct RequestMessage {
-  public let id: UInt
-  public let command: UInt
-  public let data: Data?
+struct RequestMessage {
+  let id: UInt
+  let command: UInt
+  let data: Data?
 }
 
-public struct ResponseMessage {
-  public let id: UInt
-  public let result: ResponseResult
+struct ResponseMessage {
+  let id: UInt
+  let result: ResponseResult
 }
 
-public enum ResponseResult {
+enum ResponseResult {
   case success(Data?)
   case remoteError(message: String, code: String, errno: Int)
 }
 
 // MARK: - Codecs
 
-public struct RequestMessageCodec: Codec {
-  public typealias Value = RequestMessage
+struct RequestMessageCodec: Codec {
+  typealias Value = RequestMessage
 
-  public init() {}
-
-  public func preencode(_ state: inout State, _ value: RequestMessage) {
+  func preencode(_ state: inout State, _ value: RequestMessage) {
     Primitive.UInt().preencode(&state, value.id)
     Primitive.UInt().preencode(&state, value.command)
     Primitive.UInt().preencode(&state, 0)
     Primitive.Buffer().preencode(&state, value.data ?? Data())
   }
 
-  public func encode(_ state: inout State, _ value: RequestMessage) throws {
+  func encode(_ state: inout State, _ value: RequestMessage) throws {
     try Primitive.UInt().encode(&state, value.id)
     try Primitive.UInt().encode(&state, value.command)
     try Primitive.UInt().encode(&state, 0 as UInt)
     try Primitive.Buffer().encode(&state, value.data ?? Data())
   }
 
-  public func decode(_ state: inout State) throws -> RequestMessage {
+  func decode(_ state: inout State) throws -> RequestMessage {
     let id = try Primitive.UInt().decode(&state)
     let command = try Primitive.UInt().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
@@ -55,12 +53,10 @@ public struct RequestMessageCodec: Codec {
   }
 }
 
-public struct ResponseMessageCodec: Codec {
-  public typealias Value = ResponseMessage
+struct ResponseMessageCodec: Codec {
+  typealias Value = ResponseMessage
 
-  public init() {}
-
-  public func preencode(_ state: inout State, _ value: ResponseMessage) {
+  func preencode(_ state: inout State, _ value: ResponseMessage) {
     Primitive.UInt().preencode(&state, value.id)
     switch value.result {
     case .success(let data):
@@ -76,7 +72,7 @@ public struct ResponseMessageCodec: Codec {
     }
   }
 
-  public func encode(_ state: inout State, _ value: ResponseMessage) throws {
+  func encode(_ state: inout State, _ value: ResponseMessage) throws {
     try Primitive.UInt().encode(&state, value.id)
     switch value.result {
     case .success(let data):
@@ -92,7 +88,7 @@ public struct ResponseMessageCodec: Codec {
     }
   }
 
-  public func decode(_ state: inout State) throws -> ResponseMessage {
+  func decode(_ state: inout State) throws -> ResponseMessage {
     let id = try Primitive.UInt().decode(&state)
     let isErr = try Primitive.Bool().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
@@ -109,12 +105,10 @@ public struct ResponseMessageCodec: Codec {
   }
 }
 
-public struct DecodedMessageCodec: Codec {
-  public typealias Value = DecodedMessage
+struct DecodedMessageCodec: Codec {
+  typealias Value = DecodedMessage
 
-  public init() {}
-
-  public func preencode(_ state: inout State, _ value: DecodedMessage) {
+  func preencode(_ state: inout State, _ value: DecodedMessage) {
     switch value {
     case .request(let req):
       Primitive.UInt().preencode(&state, 1)
@@ -125,7 +119,7 @@ public struct DecodedMessageCodec: Codec {
     }
   }
 
-  public func encode(_ state: inout State, _ value: DecodedMessage) throws {
+  func encode(_ state: inout State, _ value: DecodedMessage) throws {
     switch value {
     case .request(let req):
       try Primitive.UInt().encode(&state, 1 as UInt)
@@ -136,7 +130,7 @@ public struct DecodedMessageCodec: Codec {
     }
   }
 
-  public func decode(_ state: inout State) throws -> DecodedMessage {
+  func decode(_ state: inout State) throws -> DecodedMessage {
     let messageType = try Primitive.UInt().decode(&state)
     switch messageType {
     case 1: return .request(try RequestMessageCodec().decode(&state))
@@ -146,18 +140,16 @@ public struct DecodedMessageCodec: Codec {
   }
 }
 
-public struct FrameCodec: Codec {
-  public typealias Value = DecodedMessage?
+struct FrameCodec: Codec {
+  typealias Value = DecodedMessage?
 
-  public init() {}
-
-  public func preencode(_ state: inout State, _ value: DecodedMessage?) {
+  func preencode(_ state: inout State, _ value: DecodedMessage?) {
     guard let value else { return }
     Primitive.UInt32().preencode(&state, 0)
     DecodedMessageCodec().preencode(&state, value)
   }
 
-  public func encode(_ state: inout State, _ value: DecodedMessage?) throws {
+  func encode(_ state: inout State, _ value: DecodedMessage?) throws {
     guard let value else { return }
     var bodyState = State()
     DecodedMessageCodec().preencode(&bodyState, value)
@@ -165,7 +157,7 @@ public struct FrameCodec: Codec {
     try DecodedMessageCodec().encode(&state, value)
   }
 
-  public func decode(_ state: inout State) throws -> DecodedMessage? {
+  func decode(_ state: inout State) throws -> DecodedMessage? {
     _ = try Primitive.UInt32().decode(&state)
     do {
       return try DecodedMessageCodec().decode(&state)
@@ -179,10 +171,9 @@ public struct FrameCodec: Codec {
 
 // MARK: - Messages
 
-public enum Messages {
+enum Messages {
 
-  public static func encodeRequest(id: UInt, command: UInt, data: Data?) -> Data {
-    let msg = DecodedMessage.request(RequestMessage(id: id, command: command, data: data))
+  private static func encodeFrame(_ msg: DecodedMessage) -> Data {
     var state = State()
     FrameCodec().preencode(&state, msg)
     state.allocate()
@@ -190,32 +181,27 @@ public enum Messages {
     return state.buffer
   }
 
-  public static func encodeEvent(command: UInt, data: Data?) -> Data {
-    return encodeRequest(id: 0, command: command, data: data)
+  static func encodeRequest(id: UInt, command: UInt, data: Data?) -> Data {
+    encodeFrame(.request(RequestMessage(id: id, command: command, data: data)))
   }
 
-  public static func encodeResponse(id: UInt, data: Data?) -> Data {
-    let msg = DecodedMessage.response(ResponseMessage(id: id, result: .success(data)))
-    var state = State()
-    FrameCodec().preencode(&state, msg)
-    state.allocate()
-    try! FrameCodec().encode(&state, msg)
-    return state.buffer
+  static func encodeEvent(command: UInt, data: Data?) -> Data {
+    encodeRequest(id: 0, command: command, data: data)
   }
 
-  public static func encodeErrorResponse(
+  static func encodeResponse(id: UInt, data: Data?) -> Data {
+    encodeFrame(.response(ResponseMessage(id: id, result: .success(data))))
+  }
+
+  static func encodeErrorResponse(
     id: UInt, message: String, code: String, errno: Int = 0
   ) -> Data {
-    let msg = DecodedMessage.response(
-      ResponseMessage(id: id, result: .remoteError(message: message, code: code, errno: errno)))
-    var state = State()
-    FrameCodec().preencode(&state, msg)
-    state.allocate()
-    try! FrameCodec().encode(&state, msg)
-    return state.buffer
+    encodeFrame(
+      .response(
+        ResponseMessage(id: id, result: .remoteError(message: message, code: code, errno: errno))))
   }
 
-  public static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
+  static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
     var state = State(frame)
     return try FrameCodec().decode(&state)
   }

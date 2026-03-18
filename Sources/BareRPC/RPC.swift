@@ -15,9 +15,8 @@ public class RPC {
   public var onEvent: ((IncomingEvent) async -> Void)?
   public var onError: ((Error) -> Void)?
 
-  public init(delegate: RPCDelegate? = nil, onRequest: ((IncomingRequest) async -> Void)? = nil) {
+  public init(delegate: RPCDelegate? = nil) {
     self.delegate = delegate
-    self.onRequest = onRequest
   }
 
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {

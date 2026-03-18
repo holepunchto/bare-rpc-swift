@@ -1,4 +1,5 @@
 // Sources/BareRPC/RPC.swift
+import CompactEncoding
 import Foundation
 
 /// Transport delegate for sending encoded frames over the wire.
@@ -101,11 +102,8 @@ public class RPC {
     _buffer.append(data)
     var frames: [Data] = []
     while _buffer.count >= 4 {
-      let bodyLen = Int(
-        UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
-          | (UInt32(_buffer[_buffer.startIndex + 2]) << 16)
-          | (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
-      )
+      var peekState = State(Data(_buffer.prefix(4)))
+      let bodyLen = Int(try! Primitive.UInt32().decode(&peekState))
       let frameLen = 4 + bodyLen
       guard _buffer.count >= frameLen else { break }
       frames.append(Data(_buffer.prefix(frameLen)))

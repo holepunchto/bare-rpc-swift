@@ -1,49 +1,31 @@
 import CompactEncoding
-// Sources/BareRPC/Messages.swift
 import Foundation
 
 // MARK: - Decoded message types
 
-/// A decoded wire message — either a request or a response.
 public enum DecodedMessage {
   case request(RequestMessage)
   case response(ResponseMessage)
 }
 
-/// A decoded request message (type == 1).
-///
-/// Used for both tracked requests (id > 0) and fire-and-forget events (id == 0).
 public struct RequestMessage {
-  /// Request ID. 0 for events, positive for tracked requests expecting a response.
   public let id: UInt
-  /// Application-defined command identifier.
   public let command: UInt
-  /// Optional payload bytes. Nil when the sender provided no data.
   public let data: Data?
 }
 
-/// A decoded response message (type == 2).
 public struct ResponseMessage {
-  /// The request ID this response corresponds to.
   public let id: UInt
-  /// The response outcome — either success with optional data, or an error.
   public let result: ResponseResult
 }
 
-/// The outcome of a response message.
 public enum ResponseResult {
-  /// Successful response with optional payload data.
   case success(Data?)
-  /// Error response from the remote peer, preserving all wire fields.
   case remoteError(message: String, code: String, errno: Int)
 }
 
 // MARK: - Codecs
 
-/// Codec for request message bodies (type == 1).
-///
-/// Wire format: id, command, stream (must be 0), data (length-prefixed buffer).
-/// Does not include the type byte — that is handled by ``DecodedMessageCodec``.
 public struct RequestMessageCodec: Codec {
   public typealias Value = RequestMessage
 
@@ -73,11 +55,6 @@ public struct RequestMessageCodec: Codec {
   }
 }
 
-/// Codec for response message bodies (type == 2).
-///
-/// Wire format: id, error flag, stream (must be 0), then either
-/// data (length-prefixed buffer) or (message, code, errno).
-/// Does not include the type byte — that is handled by ``DecodedMessageCodec``.
 public struct ResponseMessageCodec: Codec {
   public typealias Value = ResponseMessage
 
@@ -132,10 +109,6 @@ public struct ResponseMessageCodec: Codec {
   }
 }
 
-/// Codec for decoded messages with type-byte dispatch.
-///
-/// Wire format: type (1=request, 2=response), then the body encoded by
-/// ``RequestMessageCodec`` or ``ResponseMessageCodec``.
 public struct DecodedMessageCodec: Codec {
   public typealias Value = DecodedMessage
 
@@ -173,10 +146,6 @@ public struct DecodedMessageCodec: Codec {
   }
 }
 
-/// Codec for complete framed messages (4-byte LE length prefix + body).
-///
-/// Returns nil on decode for streaming messages (stream != 0) and unknown
-/// message types, matching the v1 behavior of silently discarding them.
 public struct FrameCodec: Codec {
   public typealias Value = DecodedMessage?
 
@@ -210,16 +179,8 @@ public struct FrameCodec: Codec {
 
 // MARK: - Messages
 
-/// Convenience methods for encoding/decoding bare-rpc wire messages.
-///
-/// These wrap the codec types (``FrameCodec``, ``DecodedMessageCodec``,
-/// ``RequestMessageCodec``, ``ResponseMessageCodec``) with a simpler API
-/// used internally by ``RPC`` and ``IncomingRequest``.
 public enum Messages {
 
-  // MARK: Encode
-
-  /// Encode a request message (type == 1) with the given ID and command.
   public static func encodeRequest(id: UInt, command: UInt, data: Data?) -> Data {
     let msg = DecodedMessage.request(RequestMessage(id: id, command: command, data: data))
     var state = State()
@@ -229,12 +190,10 @@ public enum Messages {
     return state.buffer
   }
 
-  /// Encode a fire-and-forget event (request with id == 0).
   public static func encodeEvent(command: UInt, data: Data?) -> Data {
     return encodeRequest(id: 0, command: command, data: data)
   }
 
-  /// Encode a success response (type == 2, error == false).
   public static func encodeResponse(id: UInt, data: Data?) -> Data {
     let msg = DecodedMessage.response(ResponseMessage(id: id, result: .success(data)))
     var state = State()
@@ -244,7 +203,6 @@ public enum Messages {
     return state.buffer
   }
 
-  /// Encode an error response (type == 2, error == true).
   public static func encodeErrorResponse(
     id: UInt, message: String, code: String, errno: Int = 0
   ) -> Data {
@@ -257,11 +215,6 @@ public enum Messages {
     return state.buffer
   }
 
-  // MARK: Decode
-
-  /// Decode a complete framed message (4-byte length prefix + body).
-  ///
-  /// Returns nil for streaming messages (stream != 0) and unknown message types.
   public static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
     var state = State(frame)
     return try FrameCodec().decode(&state)
@@ -270,10 +223,7 @@ public enum Messages {
 
 // MARK: - Errors
 
-/// Errors raised during message decoding.
 enum MessagesError: Error {
-  /// The message has a non-zero stream field (streaming not supported in v1).
   case streamingNotSupported
-  /// The message type byte is not 1 (request) or 2 (response).
   case unknownMessageType
 }

@@ -1,8 +1,5 @@
-// Sources/BareRPC/RPCError.swift
 import Foundation
 
-/// Error received from the remote peer via an error response.
-/// Preserves all three wire-protocol error fields (message, code, errno).
 public struct RPCRemoteError: Error {
   public let message: String
   public let code: String

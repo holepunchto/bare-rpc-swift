@@ -11,11 +11,19 @@ class PipeDelegate: RPCDelegate {
   }
 }
 
-func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDelegate)) {
+// Helper delegate that captures sent data for inspection.
+class CaptureDelegate: RPCDelegate {
+  var onSend: ((Data) -> Void)?
+  func rpc(_ rpc: RPC, send data: Data) {
+    onSend?(data)
+  }
+}
+
+func makePair() -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDelegate)) {
   let da = PipeDelegate()
   let db = PipeDelegate()
-  let a = RPC(delegate: da, onRequest: onRequest)
-  let b = RPC(delegate: db, onRequest: onRequest)
+  let a = RPC(delegate: da)
+  let b = RPC(delegate: db)
   da.peer = b
   db.peer = a
   return (a, b, (da, db))
@@ -26,10 +34,7 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
   // Basic request/response: client sends request, server replies, client gets the data back.
   @Test func requestResponse() async throws {
     let (client, server, _delegates) = makePair()
-
-    server.onRequest = { req in
-      req.reply(req.data)
-    }
+    server.onRequest = { req in req.reply(req.data) }
 
     let payload = Data([1, 2, 3])
     let response = try await client.request(42, data: payload)
@@ -44,43 +49,34 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
     #expect(response == nil)
   }
 
-  // Server rejects the request: client receives an error.
+  // Server rejects the request: client receives RPCRemoteError with all fields preserved.
   @Test func requestRejection() async throws {
     let (client, server, _delegates) = makePair()
-    server.onRequest = { req in req.reject("Oops", code: "ERR") }
-    await #expect(throws: (any Error).self) {
+    server.onRequest = { req in req.reject("Oops", code: "ERR", errno: -2) }
+
+    do {
       _ = try await client.request(1, data: nil)
+      Issue.record("Expected error")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "Oops")
+      #expect(err.code == "ERR")
+      #expect(err.errno == -2)
     }
   }
 
-  // Fire-and-forget event: server receives it but does not reply.
+  // Fire-and-forget event: server receives it via onEvent, not onRequest.
   @Test func event() async throws {
     let (client, server, _delegates) = makePair()
 
     try await confirmation { confirm in
-      server.onRequest = { req in
-        #expect(req.id == 0)
-        #expect(req.command == 7)
-        #expect(req.data == Data([0xBE, 0xEF]))
+      server.onEvent = { event in
+        #expect(event.command == 7)
+        #expect(event.data == Data([0xBE, 0xEF]))
         confirm()
       }
+      server.onRequest = { _ in Issue.record("Events should not trigger onRequest") }
 
       client.event(7, data: Data([0xBE, 0xEF]))
-      try await Task.sleep(nanoseconds: 50_000_000)
-    }
-  }
-
-  // reply() on an event (id=0) must be a no-op, not crash.
-  @Test func replyOnEventIsNoop() async throws {
-    let (client, server, _delegates) = makePair()
-
-    try await confirmation { confirm in
-      server.onRequest = { req in
-        req.reply(Data([1]))   // should be a no-op
-        confirm()
-      }
-
-      client.event(1, data: nil)
       try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
@@ -102,24 +98,21 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
 
   // Partial frame delivery: frame split across multiple receive() calls.
   @Test func partialFrameDelivery() async throws {
-    let (client, server, _delegates) = makePair()
-    server.onRequest = { req in req.reply(req.data) }
+    let (_, server, _delegates) = makePair()
 
-    // Encode a request frame, then feed it to the server in two halves manually
     let payload = Data([10, 20, 30])
     let frame = Messages.encodeRequest(id: 1, command: 1, data: payload)
     let mid = frame.count / 2
 
     // Feed first half — not enough for a full frame
     server.receive(Data(frame[0..<mid]))
-    // Feed second half — now the frame is complete
-    // We need to capture the response, so set up the client to handle it
-    // Actually, let's test via the server's onRequest handler
+
     try await confirmation { confirm in
       server.onRequest = { req in
         #expect(req.data == payload)
         confirm()
       }
+      // Feed second half — now the frame is complete
       server.receive(Data(frame[mid...]))
       try await Task.sleep(nanoseconds: 50_000_000)
     }
@@ -127,8 +120,7 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
 
   // Multiple frames in a single receive() call.
   @Test func multipleFramesInSingleReceive() async throws {
-    let da = PipeDelegate()
-    let server = RPC(delegate: da)
+    let server = RPC(delegate: CaptureDelegate())
 
     let frame1 = Messages.encodeRequest(id: 0, command: 1, data: Data([1]))
     let frame2 = Messages.encodeRequest(id: 0, command: 2, data: Data([2]))
@@ -141,8 +133,8 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
     let lock = NSLock()
 
     try await confirmation(expectedCount: 2) { confirm in
-      server.onRequest = { req in
-        lock.withLock { commands.append(req.command) }
+      server.onEvent = { event in
+        lock.withLock { commands.append(event.command) }
         confirm()
       }
       server.receive(combined)
@@ -154,10 +146,8 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
     }
   }
 
-  // Streaming request with tracked id is rejected with an error response.
-  @Test func streamingRequestRejection() async throws {
-    // Build a streaming request frame (stream != 0) with a tracked id
-    // We need to manually construct this since encodeRequest always sets stream=0
+  // Streaming request is silently discarded — no rejection sent, no onRequest called.
+  @Test func streamingRequestSilentlyDiscarded() async throws {
     var body = Data()
     body.append(1)    // type = 1 (request)
     body.append(5)    // id = 5
@@ -165,39 +155,20 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
     body.append(1)    // stream = 1 (non-zero — streaming)
     body.append(0)    // data length = 0
 
-    var frame = Data(count: 4)
-    let len = UInt32(body.count)
-    frame[0] = UInt8(len & 0xFF)
-    frame[1] = UInt8((len >> 8) & 0xFF)
-    frame[2] = UInt8((len >> 16) & 0xFF)
-    frame[3] = UInt8((len >> 24) & 0xFF)
-    frame.append(body)
-
-    // Capture what the server sends back
-    var sentData: Data?
     let captureDelegate = CaptureDelegate()
+    let lock = NSLock()
+    var sentAnything = false
+    captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
 
     let server = RPC(delegate: captureDelegate)
-    captureDelegate.onSend = { data in sentData = data }
-
-    server.receive(frame)
+    server.onRequest = { _ in Issue.record("Streaming requests should be silently discarded") }
+    server.receive(makeRawFrame(body))
     try await Task.sleep(nanoseconds: 100_000_000)
 
-    // Server should have sent a rejection response
-    #expect(sentData != nil)
-    if let response = sentData {
-      let msg = try Messages.decodeFrame(response)
-      guard case .response(let resp) = msg else { Issue.record("Expected response"); return }
-      #expect(resp.id == 5)
-      guard case .remoteError(let message, let code, _) = resp.result else {
-        Issue.record("Expected remoteError rejection"); return
-      }
-      #expect(message == "Streaming not supported")
-      #expect(code == "UNSUPPORTED")
-    }
+    lock.withLock { #expect(sentAnything == false) }
   }
 
-  // Streaming event (id=0, stream!=0) is silently discarded — no rejection sent.
+  // Streaming event (id=0, stream!=0) is silently discarded.
   @Test func streamingEventSilentlyDiscarded() async throws {
     var body = Data()
     body.append(1)    // type = 1 (request)
@@ -206,70 +177,65 @@ func makePair(onRequest: ((IncomingRequest) async -> Void)? = nil) -> (client: R
     body.append(1)    // stream = 1 (non-zero)
     body.append(0)    // data length = 0
 
-    var frame = Data(count: 4)
-    let len = UInt32(body.count)
-    frame[0] = UInt8(len & 0xFF)
-    frame[1] = UInt8((len >> 8) & 0xFF)
-    frame[2] = UInt8((len >> 16) & 0xFF)
-    frame[3] = UInt8((len >> 24) & 0xFF)
-    frame.append(body)
-
     let captureDelegate = CaptureDelegate()
+    let lock = NSLock()
     var sentAnything = false
-    captureDelegate.onSend = { _ in sentAnything = true }
+    captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
 
     let server = RPC(delegate: captureDelegate)
-    server.receive(frame)
+    server.onEvent = { _ in Issue.record("Streaming events should be silently discarded") }
+    server.receive(makeRawFrame(body))
     try await Task.sleep(nanoseconds: 100_000_000)
 
-    #expect(sentAnything == false)
+    lock.withLock { #expect(sentAnything == false) }
   }
 
   // Unknown message type is silently discarded.
   @Test func unknownMessageTypeDiscarded() async throws {
-    var body = Data()
-    body.append(99)   // type = 99 (unknown)
-
-    var frame = Data(count: 4)
-    let len = UInt32(body.count)
-    frame[0] = UInt8(len & 0xFF)
-    frame[1] = UInt8((len >> 8) & 0xFF)
-    frame[2] = UInt8((len >> 16) & 0xFF)
-    frame[3] = UInt8((len >> 24) & 0xFF)
-    frame.append(body)
-
     let captureDelegate = CaptureDelegate()
+    let lock = NSLock()
     var sentAnything = false
-    captureDelegate.onSend = { _ in sentAnything = true }
+    captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
 
     let server = RPC(delegate: captureDelegate)
     server.onRequest = { _ in Issue.record("Should not receive unknown type as request") }
-    server.receive(frame)
+    server.receive(makeRawFrame(Data([99])))  // type=99 (unknown)
     try await Task.sleep(nanoseconds: 100_000_000)
 
-    // Should not crash and should not send anything
-    #expect(sentAnything == false)
+    lock.withLock { #expect(sentAnything == false) }
   }
 
-  // Error errno round-trip through RPC layer.
+  // Malformed frame triggers onError callback.
+  @Test func malformedFrameTriggersOnError() async throws {
+    let server = RPC(delegate: CaptureDelegate())
+
+    // A frame claiming 100 bytes of body but only providing 2
+    // will be buffered until complete — so instead, provide a valid-length
+    // frame with corrupt compact-encoded content
+    var body = Data()
+    body.append(1)     // type = 1 (request)
+    body.append(0xFE)  // start of a varint that needs more bytes
+    // truncated — decoding will fail
+
+    try await confirmation { confirm in
+      server.onError = { _ in confirm() }
+      server.receive(makeRawFrame(body))
+      try await Task.sleep(nanoseconds: 100_000_000)
+    }
+  }
+
+  // Error errno round-trip through RPC layer preserves all fields.
   @Test func errorErrnoRoundtrip() async throws {
     let (client, server, _delegates) = makePair()
-    server.onRequest = { req in req.reject("fail", code: "ENOENT") }
+    server.onRequest = { req in req.reject("fail", code: "ENOENT", errno: 42) }
 
     do {
       _ = try await client.request(1, data: nil)
       Issue.record("Expected error")
-    } catch let err as NSError {
-      #expect(err.domain == "ENOENT")
-      #expect(err.userInfo[NSLocalizedDescriptionKey] as? String == "fail")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "fail")
+      #expect(err.code == "ENOENT")
+      #expect(err.errno == 42)
     }
-  }
-}
-
-// Helper delegate that captures sent data for inspection.
-class CaptureDelegate: RPCDelegate {
-  var onSend: ((Data) -> Void)?
-  func rpc(_ rpc: RPC, send data: Data) {
-    onSend?(data)
   }
 }

@@ -1,8 +1,7 @@
 // Sources/BareRPC/IncomingRequest.swift
 import Foundation
 
-/// Server-side handle for an incoming request.
-/// reply() and reject() are no-ops when id == 0 (fire-and-forget events).
+/// Server-side handle for an incoming tracked request (id > 0).
 public class IncomingRequest {
   public let command: Int
   public let id: Int
@@ -17,15 +16,15 @@ public class IncomingRequest {
     self._rpc = rpc
   }
 
-  /// Send a successful response. No-op when id == 0.
+  /// Send a successful response.
   public func reply(_ data: Data? = nil) {
-    guard id > 0, let rpc = _rpc else { return }
+    guard let rpc = _rpc else { return }
     rpc._sendData(Messages.encodeResponse(id: id, data: data))
   }
 
-  /// Send an error response. No-op when id == 0.
-  public func reject(_ message: String, code: String? = nil) {
-    guard id > 0, let rpc = _rpc else { return }
-    rpc._sendData(Messages.encodeErrorResponse(id: id, message: message, code: code ?? "ERROR"))
+  /// Send an error response.
+  public func reject(_ message: String, code: String? = nil, errno: Int = 0) {
+    guard let rpc = _rpc else { return }
+    rpc._sendData(Messages.encodeErrorResponse(id: id, message: message, code: code ?? "ERROR", errno: errno))
   }
 }

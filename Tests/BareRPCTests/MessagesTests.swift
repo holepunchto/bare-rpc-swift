@@ -59,11 +59,12 @@ import Foundation
     let msg = try Messages.decodeFrame(frame)
     guard case .response(let resp) = msg else { Issue.record("Expected response"); return }
     #expect(resp.id == 4)
-    guard case .remoteError(let message, let code, _) = resp.result else {
+    guard case .remoteError(let message, let code, let errno) = resp.result else {
       Issue.record("Expected remoteError"); return
     }
     #expect(message == "Not found")
     #expect(code == "NOT_FOUND")
+    #expect(errno == 0)
   }
 
   // Frame prefix correctness: first 4 bytes must be little-endian body length
@@ -87,23 +88,49 @@ import Foundation
     #expect(errno == 42)
   }
 
-  // Unknown message type throws unknownMessageType
-  @Test func unknownMessageTypeThrows() throws {
-    // Build a frame with type=99 (unknown)
+  // Unknown message type returns nil (silently discarded)
+  @Test func unknownMessageTypeReturnsNil() throws {
     var body = Data()
-    // compact-encode type=99: single byte since < 128
-    body.append(99)
-    // Prepend 4-byte LE length
-    let len = UInt32(body.count)
-    var frame = Data(count: 4)
-    frame[0] = UInt8(len & 0xFF)
-    frame[1] = UInt8((len >> 8) & 0xFF)
-    frame[2] = UInt8((len >> 16) & 0xFF)
-    frame[3] = UInt8((len >> 24) & 0xFF)
-    frame.append(body)
-
-    #expect(throws: MessagesError.self) {
-      _ = try Messages.decodeFrame(frame)
-    }
+    body.append(99)  // type=99 (unknown)
+    let frame = makeRawFrame(body)
+    let result = try Messages.decodeFrame(frame)
+    #expect(result == nil)
   }
+
+  // Streaming request returns nil (silently discarded)
+  @Test func streamingRequestReturnsNil() throws {
+    var body = Data()
+    body.append(1)  // type = 1 (request)
+    body.append(5)  // id = 5
+    body.append(1)  // command = 1
+    body.append(1)  // stream = 1 (non-zero)
+    body.append(0)  // data length = 0
+    let frame = makeRawFrame(body)
+    let result = try Messages.decodeFrame(frame)
+    #expect(result == nil)
+  }
+
+  // Streaming response returns nil (silently discarded)
+  @Test func streamingResponseReturnsNil() throws {
+    var body = Data()
+    body.append(2)  // type = 2 (response)
+    body.append(5)  // id = 5
+    body.append(0)  // error = false
+    body.append(1)  // stream = 1 (non-zero)
+    let frame = makeRawFrame(body)
+    let result = try Messages.decodeFrame(frame)
+    #expect(result == nil)
+  }
+}
+
+/// Helper to build a raw frame from a body (prepends 4-byte LE length).
+func makeRawFrame(_ body: Data) -> Data {
+  let len = UInt32(body.count)
+  var frame = Data(count: 4)
+  frame[0] = UInt8(len & 0xFF)
+  frame[1] = UInt8((len >> 8) & 0xFF)
+  frame[2] = UInt8((len >> 16) & 0xFF)
+  frame[3] = UInt8((len >> 24) & 0xFF)
+  frame.append(body)
+  return frame
 }

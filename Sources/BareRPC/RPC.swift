@@ -12,6 +12,8 @@ public class RPC {
   private var _pending: [Int: CheckedContinuation<Data?, Error>] = [:]
   private weak var _delegate: RPCDelegate?
   private var _onRequest: ((IncomingRequest) async -> Void)?
+  private var _onEvent: ((IncomingEvent) async -> Void)?
+  private var _onError: ((Error) -> Void)?
 
   public weak var delegate: RPCDelegate? {
     get { _lock.withLock { _delegate } }
@@ -21,6 +23,16 @@ public class RPC {
   public var onRequest: ((IncomingRequest) async -> Void)? {
     get { _lock.withLock { _onRequest } }
     set { _lock.withLock { _onRequest = newValue } }
+  }
+
+  public var onEvent: ((IncomingEvent) async -> Void)? {
+    get { _lock.withLock { _onEvent } }
+    set { _lock.withLock { _onEvent = newValue } }
+  }
+
+  public var onError: ((Error) -> Void)? {
+    get { _lock.withLock { _onError } }
+    set { _lock.withLock { _onError = newValue } }
   }
 
   public init(delegate: RPCDelegate? = nil, onRequest: ((IncomingRequest) async -> Void)? = nil) {
@@ -84,36 +96,36 @@ public class RPC {
   // MARK: - Private
 
   private func _processFrame(_ frame: Data) async {
+    let message: DecodedMessage?
     do {
-      let message = try Messages.decodeFrame(frame)
-      switch message {
-      case .request(let req):
+      message = try Messages.decodeFrame(frame)
+    } catch {
+      // Malformed frame — notify via onError, matching JS stream.destroy(err) behavior
+      onError?(error)
+      return
+    }
+
+    guard let message else { return }  // streaming or unknown type — silently discarded
+
+    switch message {
+    case .request(let req):
+      if req.id == 0 {
+        let event = IncomingEvent(command: req.command, data: req.data)
+        await onEvent?(event)
+      } else {
         let incoming = IncomingRequest(id: req.id, command: req.command, data: req.data, rpc: self)
         await onRequest?(incoming)
-      case .response(let resp):
-        let continuation = _lock.withLock { _pending.removeValue(forKey: resp.id) }
-        if let continuation {
-          switch resp.result {
-          case .success(let data):
-            continuation.resume(returning: data)
-          case .remoteError(let msg, let code, _):
-            let err = NSError(domain: code, code: 0, userInfo: [NSLocalizedDescriptionKey: msg])
-            continuation.resume(throwing: err)
-          case .streamingNotSupported:
-            continuation.resume(throwing: RPCError.streamingNotSupported)
-          }
+      }
+    case .response(let resp):
+      let continuation = _lock.withLock { _pending.removeValue(forKey: resp.id) }
+      if let continuation {
+        switch resp.result {
+        case .success(let data):
+          continuation.resume(returning: data)
+        case .remoteError(let msg, let code, let errno):
+          continuation.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
         }
       }
-    } catch let err as MessagesError {
-      if case .streamingRequest(let id, _) = err, id > 0 {
-        // Spec requires: send a rejection response for streaming requests with a tracked id
-        let rejection = Messages.encodeErrorResponse(id: id, message: "Streaming not supported", code: "UNSUPPORTED")
-        _sendData(rejection)
-        // For id == 0 (streaming events), there is no id to reject — silently discard
-      }
-      // All other MessagesError cases (unknownMessageType, outOfBounds): discard, do not crash
-    } catch {
-      // Discard any other decode errors — do not crash
     }
   }
 }

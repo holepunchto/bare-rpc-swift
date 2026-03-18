@@ -23,7 +23,6 @@ public struct ResponseMessage {
 public enum ResponseResult {
   case success(Data?)
   case remoteError(message: String, code: String, errno: Int)
-  case streamingNotSupported
 }
 
 // MARK: - Messages
@@ -84,16 +83,17 @@ public enum Messages {
   // MARK: Decode
 
   /// Decode a full frame (including the 4-byte length prefix).
-  public static func decodeFrame(_ frame: Data) throws -> DecodedMessage {
+  /// Returns nil for messages that cannot be handled (streaming, unknown type).
+  public static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
     var state = State(frame)
     // Re-consume and discard the 4-byte frame length prefix
     _ = try Primitive.UInt32().decode(&state)
     // Read message type
     let type_ = Swift.Int(try Primitive.UInt().decode(&state))
     switch type_ {
-    case 1: return try .request(decodeRequest(&state))
-    case 2: return try .response(decodeResponse(&state))
-    default: throw MessagesError.unknownMessageType(type_)
+    case 1: return try decodeRequest(&state).map { .request($0) }
+    case 2: return try decodeResponse(&state).map { .response($0) }
+    default: return nil  // unknown message type — silently discard
     }
   }
 
@@ -150,22 +150,22 @@ public enum Messages {
     return frame
   }
 
-  private static func decodeRequest(_ state: inout State) throws -> RequestMessage {
+  private static func decodeRequest(_ state: inout State) throws -> RequestMessage? {
     let id      = Swift.Int(try Primitive.UInt().decode(&state))
     let command = Swift.Int(try Primitive.UInt().decode(&state))
     let stream  = Swift.Int(try Primitive.UInt().decode(&state))
-    guard stream == 0 else { throw MessagesError.streamingRequest(id: id, command: command) }
+    // Streaming requests have no data field — silently discard (not supported in v1)
+    guard stream == 0 else { return nil }
     let raw = try decodeBuffer(&state)
     return RequestMessage(id: id, command: command, data: raw.isEmpty ? nil : raw)
   }
 
-  private static func decodeResponse(_ state: inout State) throws -> ResponseMessage {
+  private static func decodeResponse(_ state: inout State) throws -> ResponseMessage? {
     let id     = Swift.Int(try Primitive.UInt().decode(&state))
     let isErr  = try Primitive.Bool().decode(&state)
     let stream = Swift.Int(try Primitive.UInt().decode(&state))
-    if stream != 0 {
-      return ResponseMessage(id: id, result: .streamingNotSupported)
-    }
+    // Streaming responses — silently discard (not supported in v1)
+    if stream != 0 { return nil }
     if isErr {
       let message = try Primitive.UTF8().decode(&state)
       let code    = try Primitive.UTF8().decode(&state)
@@ -179,10 +179,5 @@ public enum Messages {
 
 // MARK: - Internal errors (protocol-level, not peer-originated)
 enum MessagesError: Error {
-  case unknownMessageType(Int)
-  // Peer sent a streaming request (stream != 0 in type=1).
-  // Carries the request id so the caller can send a rejection response.
-  // id == 0 means a streaming event — nothing to reject.
-  case streamingRequest(id: Int, command: Int)
   case outOfBounds
 }

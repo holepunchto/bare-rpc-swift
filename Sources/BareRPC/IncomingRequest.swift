@@ -3,13 +3,13 @@ import Foundation
 
 /// Server-side handle for an incoming tracked request (id > 0).
 public class IncomingRequest {
-  public let command: Int
-  public let id: Int
+  public let command: UInt
+  public let id: UInt
   public let data: Data?
 
   private weak var _rpc: RPC?
 
-  init(id: Int, command: Int, data: Data?, rpc: RPC) {
+  init(id: UInt, command: UInt, data: Data?, rpc: RPC) {
     self.id = id
     self.command = command
     self.data = data

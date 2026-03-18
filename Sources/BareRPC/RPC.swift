@@ -8,8 +8,8 @@ public protocol RPCDelegate: AnyObject {
 public class RPC {
   private let _lock = NSLock()
   private var _buffer = Data()
-  private var _nextId = 1
-  private var _pending: [Int: CheckedContinuation<Data?, Error>] = [:]
+  private var _nextId: UInt = 1
+  private var _pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
   private weak var _delegate: RPCDelegate?
   private var _onRequest: ((IncomingRequest) async -> Void)?
   private var _onEvent: ((IncomingEvent) async -> Void)?
@@ -43,8 +43,8 @@ public class RPC {
   // MARK: - Outgoing
 
   /// Send a tracked request and await the response.
-  public func request(_ command: Int, data: Data? = nil) async throws -> Data? {
-    let id: Int = _lock.withLock {
+  public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
+    let id: UInt = _lock.withLock {
       let id = _nextId
       _nextId = (_nextId % 0xFFFF_FFFE) + 1  // wrap at 2^32-1, matching JS reference
       return id
@@ -57,7 +57,7 @@ public class RPC {
   }
 
   /// Send a fire-and-forget event (id = 0, no reply expected).
-  public func event(_ command: Int, data: Data? = nil) {
+  public func event(_ command: UInt, data: Data? = nil) {
     let frame = Messages.encodeEvent(command: command, data: data)
     delegate?.rpc(self, send: frame)
   }

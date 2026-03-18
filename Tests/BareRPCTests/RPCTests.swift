@@ -129,7 +129,7 @@ func makePair() -> (client: RPC, server: RPC, delegates: (PipeDelegate, PipeDele
     combined.append(frame1)
     combined.append(frame2)
 
-    var commands: [Int] = []
+    var commands: [UInt] = []
     let lock = NSLock()
 
     try await confirmation(expectedCount: 2) { confirm in

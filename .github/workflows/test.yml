@@ -19,5 +19,6 @@ jobs:
     name: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+      - run: swift format lint --recursive --strict .
       - run: swift build
       - run: swift test

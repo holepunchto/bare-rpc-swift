@@ -19,9 +19,9 @@ public class IncomingRequest {
     rpc._sendData(Messages.encodeResponse(id: id, data: data))
   }
 
-  public func reject(_ message: String, code: String? = nil, errno: Int = 0) {
+  public func reject(_ message: String, code: String = "ERROR", errno: Int = 0) {
     guard let rpc = _rpc else { return }
     rpc._sendData(
-      Messages.encodeErrorResponse(id: id, message: message, code: code ?? "ERROR", errno: errno))
+      Messages.encodeErrorResponse(id: id, message: message, code: code, errno: errno))
   }
 }

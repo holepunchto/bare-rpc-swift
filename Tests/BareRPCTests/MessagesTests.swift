@@ -1,12 +1,9 @@
 import Foundation
-// Tests/BareRPCTests/MessagesTests.swift
 import Testing
 
 @testable import BareRPC
 
 @Suite struct MessagesTests {
-
-  // --- Request encoding/decoding ---
 
   @Test func requestRoundtrip() throws {
     let payload = Data([1, 2, 3, 4])
@@ -43,8 +40,6 @@ import Testing
     }
     #expect(req.data == nil)
   }
-
-  // --- Response encoding/decoding ---
 
   @Test func successResponseRoundtrip() throws {
     let payload = Data([10, 20, 30])
@@ -93,7 +88,6 @@ import Testing
     #expect(errno == 0)
   }
 
-  // Frame prefix correctness: first 4 bytes must be little-endian body length
   @Test func framePrefixIsBodyLength() throws {
     let payload = Data([1, 2, 3])
     let frame = Messages.encodeRequest(id: 1, command: 0, data: payload)
@@ -103,7 +97,6 @@ import Testing
     #expect(Int(bodyLen) == frame.count - 4)
   }
 
-  // Error response preserves errno value
   @Test func errorResponseErrnoRoundtrip() throws {
     let frame = Messages.encodeErrorResponse(id: 9, message: "fail", code: "ENOENT", errno: 42)
     let msg = try Messages.decodeFrame(frame)
@@ -120,16 +113,14 @@ import Testing
     #expect(errno == 42)
   }
 
-  // Unknown message type returns nil (silently discarded)
   @Test func unknownMessageTypeReturnsNil() throws {
     var body = Data()
-    body.append(99)  // type=99 (unknown)
+    body.append(99)
     let frame = makeRawFrame(body)
     let result = try Messages.decodeFrame(frame)
     #expect(result == nil)
   }
 
-  // Streaming request returns nil (silently discarded)
   @Test func streamingRequestReturnsNil() throws {
     var body = Data()
     body.append(1)  // type = 1 (request)
@@ -142,7 +133,6 @@ import Testing
     #expect(result == nil)
   }
 
-  // Streaming response returns nil (silently discarded)
   @Test func streamingResponseReturnsNil() throws {
     var body = Data()
     body.append(2)  // type = 2 (response)
@@ -155,7 +145,6 @@ import Testing
   }
 }
 
-/// Helper to build a raw frame from a body (prepends 4-byte LE length).
 func makeRawFrame(_ body: Data) -> Data {
   let len = UInt32(body.count)
   var frame = Data(count: 4)

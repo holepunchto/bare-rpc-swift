@@ -1,8 +1,6 @@
 import CompactEncoding
 import Foundation
 
-// MARK: - Decoded message types
-
 enum DecodedMessage {
   case request(RequestMessage)
   case response(ResponseMessage)
@@ -23,8 +21,6 @@ enum ResponseResult {
   case success(Data?)
   case remoteError(message: String, code: String, errno: Int)
 }
-
-// MARK: - Codecs
 
 struct RequestMessageCodec: Codec {
   typealias Value = RequestMessage
@@ -169,8 +165,6 @@ struct FrameCodec: Codec {
   }
 }
 
-// MARK: - Messages
-
 enum Messages {
 
   private static func encodeFrame(_ msg: DecodedMessage) -> Data {
@@ -206,8 +200,6 @@ enum Messages {
     return try FrameCodec().decode(&state)
   }
 }
-
-// MARK: - Errors
 
 enum MessagesError: Error {
   case streamingNotSupported

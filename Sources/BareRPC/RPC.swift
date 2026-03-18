@@ -26,43 +26,24 @@ public protocol RPCDelegate: AnyObject {
 /// 3. Call ``receive(_:)`` whenever the transport delivers bytes.
 /// 4. Use ``request(_:data:)`` (async) or ``event(_:data:)`` (fire-and-forget) to send.
 ///
-/// All mutable state is synchronized via `NSLock`. Properties (``delegate``, ``onRequest``,
-/// ``onEvent``, ``onError``) are safe to read and write from any thread.
 public class RPC {
-  private let _lock = NSLock()
   private var _buffer = Data()
   private var _nextId: UInt = 1
   private var _pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
-  private weak var _delegate: RPCDelegate?
-  private var _onRequest: ((IncomingRequest) async -> Void)?
-  private var _onEvent: ((IncomingEvent) async -> Void)?
-  private var _onError: ((Error) -> Void)?
 
   /// The transport delegate responsible for sending framed data.
-  public weak var delegate: RPCDelegate? {
-    get { _lock.withLock { _delegate } }
-    set { _lock.withLock { _delegate = newValue } }
-  }
+  public weak var delegate: RPCDelegate?
 
   /// Called when a tracked request (id > 0) is received from the remote peer.
-  public var onRequest: ((IncomingRequest) async -> Void)? {
-    get { _lock.withLock { _onRequest } }
-    set { _lock.withLock { _onRequest = newValue } }
-  }
+  public var onRequest: ((IncomingRequest) async -> Void)?
 
   /// Called when a fire-and-forget event (id == 0) is received from the remote peer.
-  public var onEvent: ((IncomingEvent) async -> Void)? {
-    get { _lock.withLock { _onEvent } }
-    set { _lock.withLock { _onEvent = newValue } }
-  }
+  public var onEvent: ((IncomingEvent) async -> Void)?
 
   /// Called when a malformed frame is received that cannot be decoded.
   ///
   /// Matches the JS reference behavior of `stream.destroy(err)` on decode failure.
-  public var onError: ((Error) -> Void)? {
-    get { _lock.withLock { _onError } }
-    set { _lock.withLock { _onError = newValue } }
-  }
+  public var onError: ((Error) -> Void)?
 
   /// Creates a new RPC instance.
   ///
@@ -70,8 +51,8 @@ public class RPC {
   ///   - delegate: The transport delegate for sending data. Held weakly.
   ///   - onRequest: Optional handler for incoming tracked requests.
   public init(delegate: RPCDelegate? = nil, onRequest: ((IncomingRequest) async -> Void)? = nil) {
-    self._delegate = delegate
-    self._onRequest = onRequest
+    self.delegate = delegate
+    self.onRequest = onRequest
   }
 
   // MARK: - Outgoing
@@ -88,14 +69,11 @@ public class RPC {
   /// - Returns: The response data, or nil if the remote replied with no data.
   /// - Throws: ``RPCRemoteError`` if the remote peer sent an error response.
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
-    let id: UInt = _lock.withLock {
-      let id = _nextId
-      _nextId = (_nextId % 0xFFFF_FFFE) + 1
-      return id
-    }
+    let id = _nextId
+    _nextId = (_nextId % 0xFFFF_FFFE) + 1
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
     return try await withCheckedThrowingContinuation { continuation in
-      _lock.withLock { _pending[id] = continuation }
+      _pending[id] = continuation
       delegate?.rpc(self, send: frame)
     }
   }
@@ -121,21 +99,17 @@ public class RPC {
   /// - Parameter data: Raw bytes from the transport.
   public func receive(_ data: Data) {
     var frames: [Data] = []
-    _lock.withLock {
-      _buffer.append(data)
-      while _buffer.count >= 4 {
-        let bodyLen = Int(
-          UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
-            | (UInt32(_buffer[_buffer.startIndex + 2]) << 16)
-            | (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
-        )
-        let frameLen = 4 + bodyLen
-        guard _buffer.count >= frameLen else { break }
-        frames.append(Data(_buffer.prefix(frameLen)))
-        // Note: removeFirst is O(n) — acceptable for v1.
-        // For high-throughput use, replace with an index-tracked buffer.
-        _buffer.removeFirst(frameLen)
-      }
+    _buffer.append(data)
+    while _buffer.count >= 4 {
+      let bodyLen = Int(
+        UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
+          | (UInt32(_buffer[_buffer.startIndex + 2]) << 16)
+          | (UInt32(_buffer[_buffer.startIndex + 3]) << 24)
+      )
+      let frameLen = 4 + bodyLen
+      guard _buffer.count >= frameLen else { break }
+      frames.append(Data(_buffer.prefix(frameLen)))
+      _buffer.removeFirst(frameLen)
     }
     for frame in frames {
       Task { await self._processFrame(frame) }
@@ -179,7 +153,7 @@ public class RPC {
         await onRequest?(incoming)
       }
     case .response(let resp):
-      let continuation = _lock.withLock { _pending.removeValue(forKey: resp.id) }
+      let continuation = _pending.removeValue(forKey: resp.id)
       if let continuation {
         switch resp.result {
         case .success(let data):

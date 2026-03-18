@@ -38,198 +38,88 @@ public enum ResponseResult {
   case remoteError(message: String, code: String, errno: Int)
 }
 
-// MARK: - Messages
+// MARK: - Codecs
 
-/// Stateless encode/decode for the bare-rpc wire protocol.
+/// Codec for request message bodies (type == 1).
 ///
-/// All messages are framed as `[4-byte LE body length][compact-encoded body]`.
-/// Uses the compact-encoding two-pass pattern: preencode (calculate size),
-/// allocate, encode. The `try!` calls are safe because preencode guarantees
-/// the buffer is correctly sized.
-///
-/// Wire format:
-/// - **Request (type 1):** type, id, command, stream, data
-/// - **Response (type 2):** type, id, error flag, stream, then data or (message, code, errno)
-public enum Messages {
+/// Wire format: id, command, stream (must be 0), data (length-prefixed buffer).
+/// Does not include the type byte — that is handled by ``DecodedMessageCodec``.
+public struct RequestMessageCodec: Codec {
+  public typealias Value = RequestMessage
 
-  // MARK: Encode
+  public init() {}
 
-  /// Encode a request message (type == 1) with the given ID and command.
-  ///
-  /// - Parameters:
-  ///   - id: Request ID. Use 0 for events, positive for tracked requests.
-  ///   - command: Application-defined command identifier.
-  ///   - data: Optional payload bytes.
-  /// - Returns: A complete framed message ready to send.
-  public static func encodeRequest(id: UInt, command: UInt, data: Data?) -> Data {
-    var state = State()
-    preencodeRequestBody(&state, id: id, command: command, data: data)
-    state.allocate()
-    encodeRequestBody(&state, id: id, command: command, data: data)
-    return prependLength(state.buffer)
-  }
-
-  /// Encode a fire-and-forget event (request with id == 0).
-  ///
-  /// - Parameters:
-  ///   - command: Application-defined command identifier.
-  ///   - data: Optional payload bytes.
-  /// - Returns: A complete framed message ready to send.
-  public static func encodeEvent(command: UInt, data: Data?) -> Data {
-    return encodeRequest(id: 0, command: command, data: data)
-  }
-
-  /// Encode a success response (type == 2, error == false).
-  ///
-  /// - Parameters:
-  ///   - id: The request ID being responded to.
-  ///   - data: Optional response payload bytes.
-  /// - Returns: A complete framed message ready to send.
-  public static func encodeResponse(id: UInt, data: Data?) -> Data {
-    var state = State()
-    Primitive.UInt().preencode(&state, 2)
-    Primitive.UInt().preencode(&state, id)
-    Primitive.Bool().preencode(&state, false)
+  public func preencode(_ state: inout State, _ value: RequestMessage) {
+    Primitive.UInt().preencode(&state, value.id)
+    Primitive.UInt().preencode(&state, value.command)
     Primitive.UInt().preencode(&state, 0)
-    let payload = data ?? Data()
-    preencodeBuffer(&state, payload)
-    state.allocate()
-    try! Primitive.UInt().encode(&state, 2)
-    try! Primitive.UInt().encode(&state, id)
-    try! Primitive.Bool().encode(&state, false)
-    try! Primitive.UInt().encode(&state, 0)
-    encodeBuffer(&state, payload)
-    return prependLength(state.buffer)
+    Primitive.Buffer().preencode(&state, value.data ?? Data())
   }
 
-  /// Encode an error response (type == 2, error == true).
-  ///
-  /// - Parameters:
-  ///   - id: The request ID being responded to.
-  ///   - message: Human-readable error message.
-  ///   - code: Machine-readable error code string.
-  ///   - errno: Numeric error number (default 0).
-  /// - Returns: A complete framed message ready to send.
-  public static func encodeErrorResponse(id: UInt, message: String, code: String, errno: Int = 0)
-    -> Data
-  {
-    var state = State()
-    Primitive.UInt().preencode(&state, 2)
-    Primitive.UInt().preencode(&state, id)
-    Primitive.Bool().preencode(&state, true)
-    Primitive.UInt().preencode(&state, 0)
-    Primitive.UTF8().preencode(&state, message)
-    Primitive.UTF8().preencode(&state, code)
-    Primitive.Int().preencode(&state, errno)
-    state.allocate()
-    try! Primitive.UInt().encode(&state, 2)
-    try! Primitive.UInt().encode(&state, id)
-    try! Primitive.Bool().encode(&state, true)
-    try! Primitive.UInt().encode(&state, 0)
-    try! Primitive.UTF8().encode(&state, message)
-    try! Primitive.UTF8().encode(&state, code)
-    try! Primitive.Int().encode(&state, errno)
-    return prependLength(state.buffer)
+  public func encode(_ state: inout State, _ value: RequestMessage) throws {
+    try Primitive.UInt().encode(&state, value.id)
+    try Primitive.UInt().encode(&state, value.command)
+    try Primitive.UInt().encode(&state, 0 as UInt)
+    try Primitive.Buffer().encode(&state, value.data ?? Data())
   }
 
-  // MARK: Decode
-
-  /// Decode a complete framed message (4-byte length prefix + body).
-  ///
-  /// Returns nil for messages that cannot be handled in v1:
-  /// - Streaming messages (stream != 0)
-  /// - Unknown message types (not 1 or 2)
-  ///
-  /// - Parameter frame: A complete frame including the 4-byte LE length prefix.
-  /// - Returns: The decoded message, or nil if the message type is unsupported.
-  /// - Throws: If the frame data is malformed or truncated.
-  public static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
-    var state = State(frame)
-    _ = try Primitive.UInt32().decode(&state)
-    let messageType = try Primitive.UInt().decode(&state)
-    switch messageType {
-    case 1: return try decodeRequest(&state).map { .request($0) }
-    case 2: return try decodeResponse(&state).map { .response($0) }
-    default: return nil
-    }
-  }
-
-  // MARK: Private helpers
-
-  private static func preencodeRequestBody(
-    _ state: inout State, id: UInt, command: UInt, data: Data?
-  ) {
-    Primitive.UInt().preencode(&state, 1)
-    Primitive.UInt().preencode(&state, id)
-    Primitive.UInt().preencode(&state, command)
-    Primitive.UInt().preencode(&state, 0)
-    preencodeBuffer(&state, data ?? Data())
-  }
-
-  private static func encodeRequestBody(_ state: inout State, id: UInt, command: UInt, data: Data?)
-  {
-    try! Primitive.UInt().encode(&state, 1)
-    try! Primitive.UInt().encode(&state, id)
-    try! Primitive.UInt().encode(&state, command)
-    try! Primitive.UInt().encode(&state, 0)
-    encodeBuffer(&state, data ?? Data())
-  }
-
-  /// Preencode a byte buffer as compact-uint length + raw bytes.
-  /// Equivalent to `c.buffer.preencode` in the JS compact-encoding library.
-  private static func preencodeBuffer(_ state: inout State, _ data: Data) {
-    Primitive.UInt().preencode(&state, Swift.UInt(data.count))
-    state.end += data.count
-  }
-
-  /// Encode a byte buffer as compact-uint length + raw bytes.
-  /// Equivalent to `c.buffer.encode` in the JS compact-encoding library.
-  private static func encodeBuffer(_ state: inout State, _ data: Data) {
-    try! Primitive.UInt().encode(&state, Swift.UInt(data.count))
-    if !data.isEmpty {
-      state.buffer.replaceSubrange(state.start..<state.start + data.count, with: data)
-      state.start += data.count
-    }
-  }
-
-  /// Decode a compact-uint length-prefixed byte buffer.
-  /// Equivalent to `c.buffer.decode` in the JS compact-encoding library.
-  private static func decodeBuffer(_ state: inout State) throws -> Data {
-    let count = Swift.Int(try Primitive.UInt().decode(&state))
-    guard state.remaining >= count else { throw MessagesError.outOfBounds }
-    let data = state.buffer.subdata(in: state.start..<state.start + count)
-    state.start += count
-    return data
-  }
-
-  /// Prepend a 4-byte little-endian length prefix to a compact-encoded body.
-  private static func prependLength(_ body: Data) -> Data {
-    let length = UInt32(body.count)
-    var frame = Data(count: 4 + body.count)
-    frame[0] = UInt8(length & 0xFF)
-    frame[1] = UInt8((length >> 8) & 0xFF)
-    frame[2] = UInt8((length >> 16) & 0xFF)
-    frame[3] = UInt8((length >> 24) & 0xFF)
-    frame.replaceSubrange(4..., with: body)
-    return frame
-  }
-
-  /// Decode a request body (type == 1). Returns nil for streaming requests.
-  private static func decodeRequest(_ state: inout State) throws -> RequestMessage? {
+  public func decode(_ state: inout State) throws -> RequestMessage {
     let id = try Primitive.UInt().decode(&state)
     let command = try Primitive.UInt().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
-    guard stream == 0 else { return nil }
-    let raw = try decodeBuffer(&state)
+    guard stream == 0 else { throw MessagesError.streamingNotSupported }
+    let raw = try Primitive.Buffer().decode(&state)
     return RequestMessage(id: id, command: command, data: raw.isEmpty ? nil : raw)
   }
+}
 
-  /// Decode a response body (type == 2). Returns nil for streaming responses.
-  private static func decodeResponse(_ state: inout State) throws -> ResponseMessage? {
+/// Codec for response message bodies (type == 2).
+///
+/// Wire format: id, error flag, stream (must be 0), then either
+/// data (length-prefixed buffer) or (message, code, errno).
+/// Does not include the type byte — that is handled by ``DecodedMessageCodec``.
+public struct ResponseMessageCodec: Codec {
+  public typealias Value = ResponseMessage
+
+  public init() {}
+
+  public func preencode(_ state: inout State, _ value: ResponseMessage) {
+    Primitive.UInt().preencode(&state, value.id)
+    switch value.result {
+    case .success(let data):
+      Primitive.Bool().preencode(&state, false)
+      Primitive.UInt().preencode(&state, 0)
+      Primitive.Buffer().preencode(&state, data ?? Data())
+    case .remoteError(let message, let code, let errno):
+      Primitive.Bool().preencode(&state, true)
+      Primitive.UInt().preencode(&state, 0)
+      Primitive.UTF8().preencode(&state, message)
+      Primitive.UTF8().preencode(&state, code)
+      Primitive.Int().preencode(&state, errno)
+    }
+  }
+
+  public func encode(_ state: inout State, _ value: ResponseMessage) throws {
+    try Primitive.UInt().encode(&state, value.id)
+    switch value.result {
+    case .success(let data):
+      try Primitive.Bool().encode(&state, false)
+      try Primitive.UInt().encode(&state, 0 as UInt)
+      try Primitive.Buffer().encode(&state, data ?? Data())
+    case .remoteError(let message, let code, let errno):
+      try Primitive.Bool().encode(&state, true)
+      try Primitive.UInt().encode(&state, 0 as UInt)
+      try Primitive.UTF8().encode(&state, message)
+      try Primitive.UTF8().encode(&state, code)
+      try Primitive.Int().encode(&state, errno)
+    }
+  }
+
+  public func decode(_ state: inout State) throws -> ResponseMessage {
     let id = try Primitive.UInt().decode(&state)
     let isErr = try Primitive.Bool().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
-    if stream != 0 { return nil }
+    guard stream == 0 else { throw MessagesError.streamingNotSupported }
     if isErr {
       let message = try Primitive.UTF8().decode(&state)
       let code = try Primitive.UTF8().decode(&state)
@@ -237,13 +127,153 @@ public enum Messages {
       return ResponseMessage(
         id: id, result: .remoteError(message: message, code: code, errno: errnoValue))
     }
-    let raw = try decodeBuffer(&state)
+    let raw = try Primitive.Buffer().decode(&state)
     return ResponseMessage(id: id, result: .success(raw.isEmpty ? nil : raw))
   }
 }
 
-/// Internal errors raised during frame decoding.
+/// Codec for decoded messages with type-byte dispatch.
+///
+/// Wire format: type (1=request, 2=response), then the body encoded by
+/// ``RequestMessageCodec`` or ``ResponseMessageCodec``.
+public struct DecodedMessageCodec: Codec {
+  public typealias Value = DecodedMessage
+
+  public init() {}
+
+  public func preencode(_ state: inout State, _ value: DecodedMessage) {
+    switch value {
+    case .request(let req):
+      Primitive.UInt().preencode(&state, 1)
+      RequestMessageCodec().preencode(&state, req)
+    case .response(let resp):
+      Primitive.UInt().preencode(&state, 2)
+      ResponseMessageCodec().preencode(&state, resp)
+    }
+  }
+
+  public func encode(_ state: inout State, _ value: DecodedMessage) throws {
+    switch value {
+    case .request(let req):
+      try Primitive.UInt().encode(&state, 1 as UInt)
+      try RequestMessageCodec().encode(&state, req)
+    case .response(let resp):
+      try Primitive.UInt().encode(&state, 2 as UInt)
+      try ResponseMessageCodec().encode(&state, resp)
+    }
+  }
+
+  public func decode(_ state: inout State) throws -> DecodedMessage {
+    let messageType = try Primitive.UInt().decode(&state)
+    switch messageType {
+    case 1: return .request(try RequestMessageCodec().decode(&state))
+    case 2: return .response(try ResponseMessageCodec().decode(&state))
+    default: throw MessagesError.unknownMessageType
+    }
+  }
+}
+
+/// Codec for complete framed messages (4-byte LE length prefix + body).
+///
+/// Returns nil on decode for streaming messages (stream != 0) and unknown
+/// message types, matching the v1 behavior of silently discarding them.
+public struct FrameCodec: Codec {
+  public typealias Value = DecodedMessage?
+
+  public init() {}
+
+  public func preencode(_ state: inout State, _ value: DecodedMessage?) {
+    guard let value else { return }
+    Primitive.UInt32().preencode(&state, 0)
+    DecodedMessageCodec().preencode(&state, value)
+  }
+
+  public func encode(_ state: inout State, _ value: DecodedMessage?) throws {
+    guard let value else { return }
+    var bodyState = State()
+    DecodedMessageCodec().preencode(&bodyState, value)
+    try Primitive.UInt32().encode(&state, UInt32(bodyState.end))
+    try DecodedMessageCodec().encode(&state, value)
+  }
+
+  public func decode(_ state: inout State) throws -> DecodedMessage? {
+    _ = try Primitive.UInt32().decode(&state)
+    do {
+      return try DecodedMessageCodec().decode(&state)
+    } catch MessagesError.streamingNotSupported {
+      return nil
+    } catch MessagesError.unknownMessageType {
+      return nil
+    }
+  }
+}
+
+// MARK: - Messages
+
+/// Convenience methods for encoding/decoding bare-rpc wire messages.
+///
+/// These wrap the codec types (``FrameCodec``, ``DecodedMessageCodec``,
+/// ``RequestMessageCodec``, ``ResponseMessageCodec``) with a simpler API
+/// used internally by ``RPC`` and ``IncomingRequest``.
+public enum Messages {
+
+  // MARK: Encode
+
+  /// Encode a request message (type == 1) with the given ID and command.
+  public static func encodeRequest(id: UInt, command: UInt, data: Data?) -> Data {
+    let msg = DecodedMessage.request(RequestMessage(id: id, command: command, data: data))
+    var state = State()
+    FrameCodec().preencode(&state, msg)
+    state.allocate()
+    try! FrameCodec().encode(&state, msg)
+    return state.buffer
+  }
+
+  /// Encode a fire-and-forget event (request with id == 0).
+  public static func encodeEvent(command: UInt, data: Data?) -> Data {
+    return encodeRequest(id: 0, command: command, data: data)
+  }
+
+  /// Encode a success response (type == 2, error == false).
+  public static func encodeResponse(id: UInt, data: Data?) -> Data {
+    let msg = DecodedMessage.response(ResponseMessage(id: id, result: .success(data)))
+    var state = State()
+    FrameCodec().preencode(&state, msg)
+    state.allocate()
+    try! FrameCodec().encode(&state, msg)
+    return state.buffer
+  }
+
+  /// Encode an error response (type == 2, error == true).
+  public static func encodeErrorResponse(
+    id: UInt, message: String, code: String, errno: Int = 0
+  ) -> Data {
+    let msg = DecodedMessage.response(
+      ResponseMessage(id: id, result: .remoteError(message: message, code: code, errno: errno)))
+    var state = State()
+    FrameCodec().preencode(&state, msg)
+    state.allocate()
+    try! FrameCodec().encode(&state, msg)
+    return state.buffer
+  }
+
+  // MARK: Decode
+
+  /// Decode a complete framed message (4-byte length prefix + body).
+  ///
+  /// Returns nil for streaming messages (stream != 0) and unknown message types.
+  public static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
+    var state = State(frame)
+    return try FrameCodec().decode(&state)
+  }
+}
+
+// MARK: - Errors
+
+/// Errors raised during message decoding.
 enum MessagesError: Error {
-  /// The frame data was truncated — not enough bytes to read the expected value.
-  case outOfBounds
+  /// The message has a non-zero stream field (streaming not supported in v1).
+  case streamingNotSupported
+  /// The message type byte is not 1 (request) or 2 (response).
+  case unknownMessageType
 }

@@ -98,8 +98,8 @@ public class RPC {
   ///
   /// - Parameter data: Raw bytes from the transport.
   public func receive(_ data: Data) {
-    var frames: [Data] = []
     _buffer.append(data)
+    var frames: [Data] = []
     while _buffer.count >= 4 {
       let bodyLen = Int(
         UInt32(_buffer[_buffer.startIndex]) | (UInt32(_buffer[_buffer.startIndex + 1]) << 8)
@@ -112,7 +112,7 @@ public class RPC {
       _buffer.removeFirst(frameLen)
     }
     for frame in frames {
-      Task { await self._processFrame(frame) }
+      _dispatchFrame(frame)
     }
   }
 
@@ -125,14 +125,13 @@ public class RPC {
 
   // MARK: - Private
 
-  /// Decode and dispatch a single complete frame.
+  /// Decode and dispatch a single complete frame synchronously.
   ///
-  /// - Requests (id > 0) are dispatched to ``onRequest``.
-  /// - Events (id == 0) are dispatched to ``onEvent``.
-  /// - Responses are matched to pending continuations by ID.
-  /// - Streaming and unknown message types are silently discarded.
-  /// - Decode errors are reported via ``onError``.
-  private func _processFrame(_ frame: Data) async {
+  /// Responses are handled inline to avoid data races on ``_pending``.
+  /// Requests and events are dispatched in a ``Task`` since their handlers are async.
+  /// Streaming and unknown message types are silently discarded.
+  /// Decode errors are reported via ``onError``.
+  private func _dispatchFrame(_ frame: Data) {
     let message: DecodedMessage?
     do {
       message = try Messages.decodeFrame(frame)
@@ -145,12 +144,16 @@ public class RPC {
 
     switch message {
     case .request(let req):
-      if req.id == 0 {
-        let event = IncomingEvent(command: req.command, data: req.data)
-        await onEvent?(event)
-      } else {
-        let incoming = IncomingRequest(id: req.id, command: req.command, data: req.data, rpc: self)
-        await onRequest?(incoming)
+      Task { [weak self] in
+        guard let self else { return }
+        if req.id == 0 {
+          let event = IncomingEvent(command: req.command, data: req.data)
+          await self.onEvent?(event)
+        } else {
+          let incoming = IncomingRequest(
+            id: req.id, command: req.command, data: req.data, rpc: self)
+          await self.onRequest?(incoming)
+        }
       }
     case .response(let resp):
       let continuation = _pending.removeValue(forKey: resp.id)

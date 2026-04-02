@@ -6,9 +6,9 @@ public protocol RPCDelegate: AnyObject {
 }
 
 public class RPC {
-  private var _buffer = Data()
-  private var _nextId: UInt = 1
-  private var _pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
+  private var buffer = Data()
+  private var nextId: UInt = 1
+  private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
 
   public weak var delegate: RPCDelegate?
   public var onRequest: ((IncomingRequest) async -> Void)?
@@ -20,11 +20,11 @@ public class RPC {
   }
 
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
-    let id = _nextId
-    _nextId = (_nextId % 0xFFFF_FFFE) + 1
+    let id = nextId
+    nextId = (nextId % 0xFFFF_FFFE) + 1
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
     return try await withCheckedThrowingContinuation { continuation in
-      _pending[id] = continuation
+      pending[id] = continuation
       delegate?.rpc(self, send: frame)
     }
   }
@@ -35,26 +35,26 @@ public class RPC {
   }
 
   public func receive(_ data: Data) {
-    _buffer.append(data)
+    buffer.append(data)
     var frames: [Data] = []
-    while _buffer.count >= 4 {
-      var peekState = State(Data(_buffer.prefix(4)))
+    while buffer.count >= 4 {
+      var peekState = State(Data(buffer.prefix(4)))
       let bodyLen = Int(try! Primitive.UInt32().decode(&peekState))
       let frameLen = 4 + bodyLen
-      guard _buffer.count >= frameLen else { break }
-      frames.append(Data(_buffer.prefix(frameLen)))
-      _buffer.removeFirst(frameLen)
+      guard buffer.count >= frameLen else { break }
+      frames.append(Data(buffer.prefix(frameLen)))
+      buffer.removeFirst(frameLen)
     }
     for frame in frames {
-      _dispatchFrame(frame)
+      dispatchFrame(frame)
     }
   }
 
-  func _sendData(_ data: Data) {
+  func sendData(_ data: Data) {
     delegate?.rpc(self, send: data)
   }
 
-  private func _dispatchFrame(_ frame: Data) {
+  private func dispatchFrame(_ frame: Data) {
     let message: DecodedMessage?
     do {
       message = try Messages.decodeFrame(frame)
@@ -83,7 +83,7 @@ public class RPC {
       break
     case .response(let resp):
       guard resp.stream == 0 else { return }
-      let continuation = _pending.removeValue(forKey: resp.id)
+      let continuation = pending.removeValue(forKey: resp.id)
       if let continuation {
         switch resp.result {
         case .success(let data):

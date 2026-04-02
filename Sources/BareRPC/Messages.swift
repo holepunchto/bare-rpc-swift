@@ -130,12 +130,12 @@ struct StreamMessageCodec: Codec {
   func preencode(_ state: inout State, _ value: StreamMessage) {
     Primitive.UInt().preencode(&state, value.id)
     Primitive.UInt().preencode(&state, value.flags)
-    if value.flags & StreamFlag.ERROR != 0 {
+    if value.flags & StreamFlag.error != 0 {
       let error = value.error!
       Primitive.UTF8().preencode(&state, error.message)
       Primitive.UTF8().preencode(&state, error.code)
       Primitive.Int().preencode(&state, error.errno)
-    } else if value.flags & StreamFlag.DATA != 0 {
+    } else if value.flags & StreamFlag.data != 0 {
       Primitive.Buffer().preencode(&state, value.data ?? Data())
     }
   }
@@ -143,12 +143,12 @@ struct StreamMessageCodec: Codec {
   func encode(_ state: inout State, _ value: StreamMessage) throws {
     try Primitive.UInt().encode(&state, value.id)
     try Primitive.UInt().encode(&state, value.flags)
-    if value.flags & StreamFlag.ERROR != 0 {
+    if value.flags & StreamFlag.error != 0 {
       let error = value.error!
       try Primitive.UTF8().encode(&state, error.message)
       try Primitive.UTF8().encode(&state, error.code)
       try Primitive.Int().encode(&state, error.errno)
-    } else if value.flags & StreamFlag.DATA != 0 {
+    } else if value.flags & StreamFlag.data != 0 {
       try Primitive.Buffer().encode(&state, value.data ?? Data())
     }
   }
@@ -156,14 +156,14 @@ struct StreamMessageCodec: Codec {
   func decode(_ state: inout State) throws -> StreamMessage {
     let id = try Primitive.UInt().decode(&state)
     let flags = try Primitive.UInt().decode(&state)
-    if flags & StreamFlag.ERROR != 0 {
+    if flags & StreamFlag.error != 0 {
       let message = try Primitive.UTF8().decode(&state)
       let code = try Primitive.UTF8().decode(&state)
       let errno = try Primitive.Int().decode(&state)
       return StreamMessage(
         id: id, flags: flags, data: nil,
         error: RPCRemoteError(message: message, code: code, errno: errno))
-    } else if flags & StreamFlag.DATA != 0 {
+    } else if flags & StreamFlag.data != 0 {
       let raw = try Primitive.Buffer().decode(&state)
       return StreamMessage(id: id, flags: flags, data: raw.isEmpty ? nil : raw, error: nil)
     }

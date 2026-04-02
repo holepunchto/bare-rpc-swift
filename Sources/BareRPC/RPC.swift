@@ -67,6 +67,7 @@ public class RPC {
 
     switch message {
     case .request(let req):
+      guard req.stream == 0 else { return }
       Task { [weak self] in
         guard let self else { return }
         if req.id == 0 {
@@ -78,7 +79,10 @@ public class RPC {
           await self.onRequest?(incoming)
         }
       }
+    case .stream:
+      break
     case .response(let resp):
+      guard resp.stream == 0 else { return }
       let continuation = _pending.removeValue(forKey: resp.id)
       if let continuation {
         switch resp.result {

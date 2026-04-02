@@ -9,9 +9,12 @@ public class RPC {
   private var buffer = Data()
   private var nextId: UInt = 1
   private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
+  private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
+  private var incomingStreams: [UInt: IncomingStream] = [:]
+  private var outgoingStreams: [UInt: OutgoingStream] = [:]
 
   public weak var delegate: RPCDelegate?
-  public var onRequest: ((IncomingRequest) async -> Void)?
+  public var onRequest: ((IncomingRequest) async throws -> Void)?
   public var onEvent: ((IncomingEvent) async -> Void)?
   public var onError: ((Error) -> Void)?
 
@@ -34,6 +37,30 @@ public class RPC {
     delegate?.rpc(self, send: frame)
   }
 
+  public func createRequestStream(command: UInt) -> OutgoingStream {
+    let id = nextId
+    nextId = (nextId % 0xFFFF_FFFE) + 1
+    let stream = OutgoingStream(requestId: id, mask: StreamFlag.request) { [weak self] data in
+      self?.sendData(data)
+    }
+    registerOutgoingStream(stream, forId: id)
+    // Send OPEN handshake: type=REQUEST with stream=OPEN
+    sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+    return stream
+  }
+
+  public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
+    -> IncomingStream
+  {
+    let id = nextId
+    nextId = (nextId % 0xFFFF_FFFE) + 1
+    let frame = Messages.encodeRequest(id: id, command: command, data: data)
+    return try await withCheckedThrowingContinuation { continuation in
+      pendingResponseStreams[id] = continuation
+      delegate?.rpc(self, send: frame)
+    }
+  }
+
   public func receive(_ data: Data) {
     buffer.append(data)
     var frames: [Data] = []
@@ -54,6 +81,92 @@ public class RPC {
     delegate?.rpc(self, send: data)
   }
 
+  func registerOutgoingStream(_ stream: OutgoingStream, forId id: UInt) {
+    outgoingStreams[id] = stream
+    stream.onClose = { [weak self] in
+      self?.outgoingStreams.removeValue(forKey: id)
+    }
+  }
+
+  // Responder receives type=REQUEST with stream=OPEN → create IncomingStream, send ack
+  private func handleRequestStreamOpen(_ req: RequestMessage) {
+    guard req.id != 0 else { return }  // events (id=0) can't have streams
+    let incoming = IncomingStream(requestId: req.id, mask: StreamFlag.request)
+    incomingStreams[req.id] = incoming
+    // Send OPEN ack: type=STREAM with REQUEST|OPEN
+    sendData(Messages.encodeStream(id: req.id, flags: StreamFlag.request | StreamFlag.open))
+    // Deliver to onRequest with the stream attached
+    let incomingRequest = IncomingRequest(
+      id: req.id, command: req.command, data: req.data, rpc: self,
+      requestStream: incoming)
+    Task { [weak self] in
+      try? await self?.onRequest?(incomingRequest)
+    }
+  }
+
+  // Initiator receives type=RESPONSE with stream=OPEN → create IncomingStream, resolve pending
+  private func handleResponseStreamOpen(_ resp: ResponseMessage) {
+    // Fail any normal-response continuation that was expecting Data, not a stream
+    if let normalCont = pending.removeValue(forKey: resp.id) {
+      normalCont.resume(
+        throwing: RPCRemoteError(
+          message: "Expected normal response", code: "ERR_UNEXPECTED_STREAM"))
+    }
+    guard let continuation = pendingResponseStreams.removeValue(forKey: resp.id) else { return }
+    let incoming = IncomingStream(requestId: resp.id, mask: StreamFlag.response)
+    incomingStreams[resp.id] = incoming
+    // Send OPEN ack: type=STREAM with RESPONSE|OPEN
+    sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.open))
+    continuation.resume(returning: incoming)
+  }
+
+  private func handleStreamMessage(_ msg: StreamMessage) {
+    if msg.flags & StreamFlag.open != 0 {
+      // OPEN ack from remote — currently no action needed
+      return
+    }
+
+    if msg.flags & StreamFlag.data != 0 {
+      if let incoming = incomingStreams[msg.id] {
+        if let data = msg.data {
+          incoming.push(data)
+        }
+      }
+      return
+    }
+
+    if msg.flags & StreamFlag.end != 0 {
+      if let incoming = incomingStreams[msg.id] {
+        incoming.end()
+      }
+      return
+    }
+
+    if msg.flags & StreamFlag.close != 0 {
+      if msg.flags & StreamFlag.error != 0 {
+        if let incoming = incomingStreams.removeValue(forKey: msg.id) {
+          incoming.destroy(error: msg.error)
+        }
+      } else {
+        if let incoming = incomingStreams.removeValue(forKey: msg.id) {
+          incoming.end()
+        }
+      }
+      return
+    }
+
+    if msg.flags & StreamFlag.destroy != 0 {
+      if let outgoing = outgoingStreams[msg.id] {
+        if msg.flags & StreamFlag.error != 0 {
+          outgoing.destroy(error: msg.error)
+        } else {
+          outgoing.destroy()
+        }
+      }
+      return
+    }
+  }
+
   private func dispatchFrame(_ frame: Data) {
     let message: DecodedMessage?
     do {
@@ -67,29 +180,41 @@ public class RPC {
 
     switch message {
     case .request(let req):
-      guard req.stream == 0 else { return }
-      Task { [weak self] in
-        guard let self else { return }
-        if req.id == 0 {
-          let event = IncomingEvent(command: req.command, data: req.data)
-          await self.onEvent?(event)
-        } else {
-          let incoming = IncomingRequest(
-            id: req.id, command: req.command, data: req.data, rpc: self)
-          await self.onRequest?(incoming)
+      if req.stream == StreamFlag.open {
+        handleRequestStreamOpen(req)
+      } else {
+        Task { [weak self] in
+          guard let self else { return }
+          if req.id == 0 {
+            let event = IncomingEvent(command: req.command, data: req.data)
+            await self.onEvent?(event)
+          } else {
+            let incoming = IncomingRequest(
+              id: req.id, command: req.command, data: req.data, rpc: self)
+            try? await self.onRequest?(incoming)
+          }
         }
       }
-    case .stream:
-      break
+    case .stream(let s):
+      handleStreamMessage(s)
     case .response(let resp):
-      guard resp.stream == 0 else { return }
-      let continuation = pending.removeValue(forKey: resp.id)
-      if let continuation {
-        switch resp.result {
-        case .success(let data):
-          continuation.resume(returning: data)
-        case .remoteError(let msg, let code, let errno):
-          continuation.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
+      if resp.stream == StreamFlag.open {
+        handleResponseStreamOpen(resp)
+      } else {
+        let continuation = pending.removeValue(forKey: resp.id)
+        if let continuation {
+          switch resp.result {
+          case .success(let data):
+            continuation.resume(returning: data)
+          case .remoteError(let msg, let code, let errno):
+            continuation.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
+          }
+        }
+        // If client expected a response stream but got a normal response, fail it
+        if let streamCont = pendingResponseStreams.removeValue(forKey: resp.id) {
+          streamCont.resume(
+            throwing: RPCRemoteError(
+              message: "Expected stream response", code: "ERR_NOT_STREAM"))
         }
       }
     }

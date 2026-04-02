@@ -4,16 +4,26 @@ import Foundation
 enum DecodedMessage {
   case request(RequestMessage)
   case response(ResponseMessage)
+  case stream(StreamMessage)
 }
 
 struct RequestMessage {
   let id: UInt
   let command: UInt
+  let stream: UInt
   let data: Data?
+}
+
+struct StreamMessage {
+  let id: UInt
+  let flags: UInt
+  let data: Data?
+  let error: RPCRemoteError?
 }
 
 struct ResponseMessage {
   let id: UInt
+  let stream: UInt
   let result: ResponseResult
 }
 
@@ -28,24 +38,30 @@ struct RequestMessageCodec: Codec {
   func preencode(_ state: inout State, _ value: RequestMessage) {
     Primitive.UInt().preencode(&state, value.id)
     Primitive.UInt().preencode(&state, value.command)
-    Primitive.UInt().preencode(&state, 0)
-    Primitive.Buffer().preencode(&state, value.data ?? Data())
+    Primitive.UInt().preencode(&state, value.stream)
+    if value.stream == 0 {
+      Primitive.Buffer().preencode(&state, value.data ?? Data())
+    }
   }
 
   func encode(_ state: inout State, _ value: RequestMessage) throws {
     try Primitive.UInt().encode(&state, value.id)
     try Primitive.UInt().encode(&state, value.command)
-    try Primitive.UInt().encode(&state, 0 as UInt)
-    try Primitive.Buffer().encode(&state, value.data ?? Data())
+    try Primitive.UInt().encode(&state, value.stream)
+    if value.stream == 0 {
+      try Primitive.Buffer().encode(&state, value.data ?? Data())
+    }
   }
 
   func decode(_ state: inout State) throws -> RequestMessage {
     let id = try Primitive.UInt().decode(&state)
     let command = try Primitive.UInt().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
-    guard stream == 0 else { throw MessagesError.streamingNotSupported }
-    let raw = try Primitive.Buffer().decode(&state)
-    return RequestMessage(id: id, command: command, data: raw.isEmpty ? nil : raw)
+    if stream == 0 {
+      let raw = try Primitive.Buffer().decode(&state)
+      return RequestMessage(id: id, command: command, stream: stream, data: raw.isEmpty ? nil : raw)
+    }
+    return RequestMessage(id: id, command: command, stream: stream, data: nil)
   }
 }
 
@@ -57,11 +73,13 @@ struct ResponseMessageCodec: Codec {
     switch value.result {
     case .success(let data):
       Primitive.Bool().preencode(&state, false)
-      Primitive.UInt().preencode(&state, 0)
-      Primitive.Buffer().preencode(&state, data ?? Data())
+      Primitive.UInt().preencode(&state, value.stream)
+      if value.stream == 0 {
+        Primitive.Buffer().preencode(&state, data ?? Data())
+      }
     case .remoteError(let message, let code, let errno):
       Primitive.Bool().preencode(&state, true)
-      Primitive.UInt().preencode(&state, 0)
+      Primitive.UInt().preencode(&state, value.stream)
       Primitive.UTF8().preencode(&state, message)
       Primitive.UTF8().preencode(&state, code)
       Primitive.Int().preencode(&state, errno)
@@ -73,11 +91,13 @@ struct ResponseMessageCodec: Codec {
     switch value.result {
     case .success(let data):
       try Primitive.Bool().encode(&state, false)
-      try Primitive.UInt().encode(&state, 0 as UInt)
-      try Primitive.Buffer().encode(&state, data ?? Data())
+      try Primitive.UInt().encode(&state, value.stream)
+      if value.stream == 0 {
+        try Primitive.Buffer().encode(&state, data ?? Data())
+      }
     case .remoteError(let message, let code, let errno):
       try Primitive.Bool().encode(&state, true)
-      try Primitive.UInt().encode(&state, 0 as UInt)
+      try Primitive.UInt().encode(&state, value.stream)
       try Primitive.UTF8().encode(&state, message)
       try Primitive.UTF8().encode(&state, code)
       try Primitive.Int().encode(&state, errno)
@@ -88,16 +108,66 @@ struct ResponseMessageCodec: Codec {
     let id = try Primitive.UInt().decode(&state)
     let isErr = try Primitive.Bool().decode(&state)
     let stream = try Primitive.UInt().decode(&state)
-    guard stream == 0 else { throw MessagesError.streamingNotSupported }
     if isErr {
       let message = try Primitive.UTF8().decode(&state)
       let code = try Primitive.UTF8().decode(&state)
       let errnoValue = try Primitive.Int().decode(&state)
       return ResponseMessage(
-        id: id, result: .remoteError(message: message, code: code, errno: errnoValue))
+        id: id, stream: stream,
+        result: .remoteError(message: message, code: code, errno: errnoValue))
     }
-    let raw = try Primitive.Buffer().decode(&state)
-    return ResponseMessage(id: id, result: .success(raw.isEmpty ? nil : raw))
+    if stream == 0 {
+      let raw = try Primitive.Buffer().decode(&state)
+      return ResponseMessage(id: id, stream: stream, result: .success(raw.isEmpty ? nil : raw))
+    }
+    return ResponseMessage(id: id, stream: stream, result: .success(nil))
+  }
+}
+
+struct StreamMessageCodec: Codec {
+  typealias Value = StreamMessage
+
+  func preencode(_ state: inout State, _ value: StreamMessage) {
+    Primitive.UInt().preencode(&state, value.id)
+    Primitive.UInt().preencode(&state, value.flags)
+    if value.flags & StreamFlag.ERROR != 0 {
+      let error = value.error!
+      Primitive.UTF8().preencode(&state, error.message)
+      Primitive.UTF8().preencode(&state, error.code)
+      Primitive.Int().preencode(&state, error.errno)
+    } else if value.flags & StreamFlag.DATA != 0 {
+      Primitive.Buffer().preencode(&state, value.data ?? Data())
+    }
+  }
+
+  func encode(_ state: inout State, _ value: StreamMessage) throws {
+    try Primitive.UInt().encode(&state, value.id)
+    try Primitive.UInt().encode(&state, value.flags)
+    if value.flags & StreamFlag.ERROR != 0 {
+      let error = value.error!
+      try Primitive.UTF8().encode(&state, error.message)
+      try Primitive.UTF8().encode(&state, error.code)
+      try Primitive.Int().encode(&state, error.errno)
+    } else if value.flags & StreamFlag.DATA != 0 {
+      try Primitive.Buffer().encode(&state, value.data ?? Data())
+    }
+  }
+
+  func decode(_ state: inout State) throws -> StreamMessage {
+    let id = try Primitive.UInt().decode(&state)
+    let flags = try Primitive.UInt().decode(&state)
+    if flags & StreamFlag.ERROR != 0 {
+      let message = try Primitive.UTF8().decode(&state)
+      let code = try Primitive.UTF8().decode(&state)
+      let errno = try Primitive.Int().decode(&state)
+      return StreamMessage(
+        id: id, flags: flags, data: nil,
+        error: RPCRemoteError(message: message, code: code, errno: errno))
+    } else if flags & StreamFlag.DATA != 0 {
+      let raw = try Primitive.Buffer().decode(&state)
+      return StreamMessage(id: id, flags: flags, data: raw.isEmpty ? nil : raw, error: nil)
+    }
+    return StreamMessage(id: id, flags: flags, data: nil, error: nil)
   }
 }
 
@@ -112,6 +182,9 @@ struct DecodedMessageCodec: Codec {
     case .response(let resp):
       Primitive.UInt().preencode(&state, 2)
       ResponseMessageCodec().preencode(&state, resp)
+    case .stream(let s):
+      Primitive.UInt().preencode(&state, 3)
+      StreamMessageCodec().preencode(&state, s)
     }
   }
 
@@ -123,6 +196,9 @@ struct DecodedMessageCodec: Codec {
     case .response(let resp):
       try Primitive.UInt().encode(&state, 2 as UInt)
       try ResponseMessageCodec().encode(&state, resp)
+    case .stream(let s):
+      try Primitive.UInt().encode(&state, 3 as UInt)
+      try StreamMessageCodec().encode(&state, s)
     }
   }
 
@@ -131,6 +207,7 @@ struct DecodedMessageCodec: Codec {
     switch messageType {
     case 1: return .request(try RequestMessageCodec().decode(&state))
     case 2: return .response(try ResponseMessageCodec().decode(&state))
+    case 3: return .stream(try StreamMessageCodec().decode(&state))
     default: throw MessagesError.unknownMessageType
     }
   }
@@ -157,8 +234,6 @@ struct FrameCodec: Codec {
     _ = try Primitive.UInt32().decode(&state)
     do {
       return try DecodedMessageCodec().decode(&state)
-    } catch MessagesError.streamingNotSupported {
-      return nil
     } catch MessagesError.unknownMessageType {
       return nil
     }
@@ -175,16 +250,16 @@ enum Messages {
     return state.buffer
   }
 
-  static func encodeRequest(id: UInt, command: UInt, data: Data?) -> Data {
-    encodeFrame(.request(RequestMessage(id: id, command: command, data: data)))
+  static func encodeRequest(id: UInt, command: UInt, stream: UInt = 0, data: Data?) -> Data {
+    encodeFrame(.request(RequestMessage(id: id, command: command, stream: stream, data: data)))
   }
 
   static func encodeEvent(command: UInt, data: Data?) -> Data {
     encodeRequest(id: 0, command: command, data: data)
   }
 
-  static func encodeResponse(id: UInt, data: Data?) -> Data {
-    encodeFrame(.response(ResponseMessage(id: id, result: .success(data))))
+  static func encodeResponse(id: UInt, stream: UInt = 0, data: Data?) -> Data {
+    encodeFrame(.response(ResponseMessage(id: id, stream: stream, result: .success(data))))
   }
 
   static func encodeErrorResponse(
@@ -192,7 +267,15 @@ enum Messages {
   ) -> Data {
     encodeFrame(
       .response(
-        ResponseMessage(id: id, result: .remoteError(message: message, code: code, errno: errno))))
+        ResponseMessage(
+          id: id, stream: 0,
+          result: .remoteError(message: message, code: code, errno: errno))))
+  }
+
+  static func encodeStream(
+    id: UInt, flags: UInt, data: Data? = nil, error: RPCRemoteError? = nil
+  ) -> Data {
+    encodeFrame(.stream(StreamMessage(id: id, flags: flags, data: data, error: error)))
   }
 
   static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {
@@ -202,6 +285,5 @@ enum Messages {
 }
 
 enum MessagesError: Error {
-  case streamingNotSupported
   case unknownMessageType
 }

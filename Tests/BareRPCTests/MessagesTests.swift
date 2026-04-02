@@ -121,27 +121,36 @@ import Testing
     #expect(result == nil)
   }
 
-  @Test func streamingRequestReturnsNil() throws {
+  @Test func requestWithNonZeroStreamDecodes() throws {
     var body = Data()
     body.append(1)  // type = 1 (request)
     body.append(5)  // id = 5
     body.append(1)  // command = 1
-    body.append(1)  // stream = 1 (non-zero)
-    body.append(0)  // data length = 0
+    body.append(1)  // stream = 1 (non-zero, no data field on wire)
     let frame = makeRawFrame(body)
     let result = try Messages.decodeFrame(frame)
-    #expect(result == nil)
+    guard case .request(let req) = result else {
+      Issue.record("Expected request")
+      return
+    }
+    #expect(req.id == 5)
+    #expect(req.stream == 1)
   }
 
-  @Test func streamingResponseReturnsNil() throws {
+  @Test func responseWithNonZeroStreamDecodes() throws {
     var body = Data()
     body.append(2)  // type = 2 (response)
     body.append(5)  // id = 5
     body.append(0)  // error = false
-    body.append(1)  // stream = 1 (non-zero)
+    body.append(1)  // stream = 1 (non-zero, no data field on wire)
     let frame = makeRawFrame(body)
     let result = try Messages.decodeFrame(frame)
-    #expect(result == nil)
+    guard case .response(let resp) = result else {
+      Issue.record("Expected response")
+      return
+    }
+    #expect(resp.id == 5)
+    #expect(resp.stream == 1)
   }
 }
 

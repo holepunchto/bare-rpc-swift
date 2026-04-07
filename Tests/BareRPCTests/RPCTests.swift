@@ -127,25 +127,19 @@ struct RPCPair {
     }
   }
 
-  @Test func streamingRequestSilentlyDiscarded() async throws {
-    var body = Data()
-    body.append(1)  // type = 1 (request)
-    body.append(5)  // id = 5
-    body.append(1)  // command = 1
-    body.append(1)  // stream = 1 (non-zero)
-    body.append(0)  // data length = 0
+  @Test func streamingRequestDeliveredWithStream() async throws {
+    let pair = RPCPair()
 
-    let captureDelegate = CaptureDelegate()
-    let lock = NSLock()
-    var sentAnything = false
-    captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
+    try await confirmation { confirm in
+      pair.server.onRequest = { req in
+        #expect(req.requestStream != nil)
+        #expect(req.command == 1)
+        confirm()
+      }
 
-    let server = RPC(delegate: captureDelegate)
-    server.onRequest = { _ in Issue.record("Streaming requests should be silently discarded") }
-    server.receive(makeRawFrame(body))
-    try await Task.sleep(nanoseconds: 100_000_000)
-
-    lock.withLock { #expect(sentAnything == false) }
+      _ = pair.client.createRequestStream(command: 1)
+      try await Task.sleep(nanoseconds: 100_000_000)
+    }
   }
 
   @Test func streamingEventSilentlyDiscarded() async throws {
@@ -153,8 +147,7 @@ struct RPCPair {
     body.append(1)  // type = 1 (request)
     body.append(0)  // id = 0 (event)
     body.append(1)  // command = 1
-    body.append(1)  // stream = 1 (non-zero)
-    body.append(0)  // data length = 0
+    body.append(1)  // stream = 1 (non-zero, no data field on wire)
 
     let captureDelegate = CaptureDelegate()
     let lock = NSLock()

@@ -11,7 +11,7 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         guard let incoming = req.requestStream else {
           Issue.record("Expected request stream")
           return
@@ -39,7 +39,7 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         guard let incoming = req.requestStream else {
           Issue.record("Expected request stream")
           return
@@ -65,7 +65,7 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         guard let incoming = req.requestStream else {
           Issue.record("Expected request stream")
           return
@@ -92,7 +92,7 @@ import Testing
   @Test func responseStreamDataFlow() async throws {
     let pair = RPCPair()
 
-    pair.server.onRequest = { req in
+    pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
       stream.write(Data([10, 20]))
       stream.write(Data([30, 40]))
@@ -111,7 +111,7 @@ import Testing
   @Test func responseStreamDestroyWithError() async throws {
     let pair = RPCPair()
 
-    pair.server.onRequest = { req in
+    pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
       stream.destroy(error: RPCRemoteError(message: "failed", code: "ERR", errno: 1))
     }
@@ -133,7 +133,7 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         guard let incoming = req.requestStream else {
           Issue.record("Expected request stream")
           return
@@ -155,7 +155,7 @@ import Testing
   @Test func emptyResponseStream() async throws {
     let pair = RPCPair()
 
-    pair.server.onRequest = { req in
+    pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
       stream.end()
     }
@@ -175,7 +175,7 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         guard let incoming = req.requestStream else {
           Issue.record("Expected request stream")
           return
@@ -198,7 +198,7 @@ import Testing
   @Test func responseStreamDestroyWithoutError() async throws {
     let pair = RPCPair()
 
-    pair.server.onRequest = { req in
+    pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
       stream.write(Data([1]))
       stream.destroy()
@@ -218,7 +218,7 @@ import Testing
   @Test func responseStreamWithRequestData() async throws {
     let pair = RPCPair()
 
-    pair.server.onRequest = { req in
+    pair.serverDelegate.onRequest = { req in
       #expect(req.data == Data([0xAB]))
       let stream = req.createResponseStream()!
       stream.write(Data([0xCD]))
@@ -241,7 +241,7 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation(expectedCount: 2) { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         guard let incoming = req.requestStream else {
           Issue.record("Expected request stream")
           return
@@ -271,7 +271,7 @@ import Testing
 
   @Test func normalResponseFailsPendingStreamContinuation() async throws {
     let pair = RPCPair()
-    pair.server.onRequest = { req in req.reply(Data([1, 2, 3])) }
+    pair.serverDelegate.onRequest = { req in req.reply(Data([1, 2, 3])) }
 
     do {
       _ = try await pair.client.requestWithResponseStream(command: 1)
@@ -283,7 +283,7 @@ import Testing
 
   @Test func streamResponseFailsPendingNormalContinuation() async throws {
     let pair = RPCPair()
-    pair.server.onRequest = { req in
+    pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
       stream.end()
     }

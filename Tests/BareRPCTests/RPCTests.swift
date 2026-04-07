@@ -5,31 +5,57 @@ import Testing
 
 class PipeDelegate: RPCDelegate {
   weak var peer: RPC?
+  var onRequest: ((IncomingRequest) async throws -> Void)?
+  var onEvent: ((IncomingEvent) async -> Void)?
+  var onError: ((Error) -> Void)?
+
   public func rpc(_ rpc: RPC, send data: Data) {
     peer?.receive(data)
+  }
+  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
+    try await onRequest?(request)
+  }
+  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {
+    await onEvent?(event)
+  }
+  func rpc(_ rpc: RPC, didFailWith error: Error) {
+    onError?(error)
   }
 }
 
 class CaptureDelegate: RPCDelegate {
   var onSend: ((Data) -> Void)?
+  var onRequest: ((IncomingRequest) async throws -> Void)?
+  var onEvent: ((IncomingEvent) async -> Void)?
+  var onError: ((Error) -> Void)?
+
   func rpc(_ rpc: RPC, send data: Data) {
     onSend?(data)
   }
+  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
+    try await onRequest?(request)
+  }
+  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {
+    await onEvent?(event)
+  }
+  func rpc(_ rpc: RPC, didFailWith error: Error) {
+    onError?(error)
+  }
 }
 
-struct RPCPair {
+final class RPCPair {
   let client: RPC
   let server: RPC
-  private let _delegates: (PipeDelegate, PipeDelegate)
+  let clientDelegate: PipeDelegate
+  let serverDelegate: PipeDelegate
 
   init() {
-    let da = PipeDelegate()
-    let db = PipeDelegate()
-    client = RPC(delegate: da)
-    server = RPC(delegate: db)
-    da.peer = server
-    db.peer = client
-    _delegates = (da, db)
+    clientDelegate = PipeDelegate()
+    serverDelegate = PipeDelegate()
+    client = RPC(delegate: clientDelegate)
+    server = RPC(delegate: serverDelegate)
+    clientDelegate.peer = server
+    serverDelegate.peer = client
   }
 }
 
@@ -37,7 +63,7 @@ struct RPCPair {
 
   @Test func requestResponse() async throws {
     let pair = RPCPair()
-    pair.server.onRequest = { req in req.reply(req.data) }
+    pair.serverDelegate.onRequest = { req in req.reply(req.data) }
 
     let payload = Data([1, 2, 3])
     let response = try await pair.client.request(42, data: payload)
@@ -46,14 +72,14 @@ struct RPCPair {
 
   @Test func requestWithNilResponse() async throws {
     let pair = RPCPair()
-    pair.server.onRequest = { req in req.reply(nil) }
+    pair.serverDelegate.onRequest = { req in req.reply(nil) }
     let response = try await pair.client.request(1, data: nil)
     #expect(response == nil)
   }
 
   @Test func requestRejection() async throws {
     let pair = RPCPair()
-    pair.server.onRequest = { req in req.reject("Oops", code: "ERR", errno: -2) }
+    pair.serverDelegate.onRequest = { req in req.reject("Oops", code: "ERR", errno: -2) }
 
     do {
       _ = try await pair.client.request(1, data: nil)
@@ -69,12 +95,14 @@ struct RPCPair {
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onEvent = { event in
+      pair.serverDelegate.onEvent = { event in
         #expect(event.command == 7)
         #expect(event.data == Data([0xBE, 0xEF]))
         confirm()
       }
-      pair.server.onRequest = { _ in Issue.record("Events should not trigger onRequest") }
+      pair.serverDelegate.onRequest = { _ in
+        Issue.record("Events should not trigger onRequest")
+      }
 
       pair.client.event(7, data: Data([0xBE, 0xEF]))
       try await Task.sleep(nanoseconds: 50_000_000)
@@ -91,7 +119,7 @@ struct RPCPair {
     pair.server.receive(Data(frame[0..<mid]))
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         #expect(req.data == payload)
         confirm()
       }
@@ -101,7 +129,8 @@ struct RPCPair {
   }
 
   @Test func multipleFramesInSingleReceive() async throws {
-    let server = RPC(delegate: CaptureDelegate())
+    let captureDelegate = CaptureDelegate()
+    let server = RPC(delegate: captureDelegate)
 
     let frame1 = Messages.encodeRequest(id: 0, command: 1, data: Data([1]))
     let frame2 = Messages.encodeRequest(id: 0, command: 2, data: Data([2]))
@@ -114,7 +143,7 @@ struct RPCPair {
     let lock = NSLock()
 
     try await confirmation(expectedCount: 2) { confirm in
-      server.onEvent = { event in
+      captureDelegate.onEvent = { event in
         lock.withLock { commands.append(event.command) }
         confirm()
       }
@@ -131,7 +160,7 @@ struct RPCPair {
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.server.onRequest = { req in
+      pair.serverDelegate.onRequest = { req in
         #expect(req.requestStream != nil)
         #expect(req.command == 1)
         confirm()
@@ -155,7 +184,9 @@ struct RPCPair {
     captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
 
     let server = RPC(delegate: captureDelegate)
-    server.onEvent = { _ in Issue.record("Streaming events should be silently discarded") }
+    captureDelegate.onEvent = { _ in
+      Issue.record("Streaming events should be silently discarded")
+    }
     server.receive(makeRawFrame(body))
     try await Task.sleep(nanoseconds: 100_000_000)
 
@@ -169,7 +200,9 @@ struct RPCPair {
     captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
 
     let server = RPC(delegate: captureDelegate)
-    server.onRequest = { _ in Issue.record("Should not receive unknown type as request") }
+    captureDelegate.onRequest = { _ in
+      Issue.record("Should not receive unknown type as request")
+    }
     server.receive(makeRawFrame(Data([99])))
     try await Task.sleep(nanoseconds: 100_000_000)
 
@@ -177,14 +210,15 @@ struct RPCPair {
   }
 
   @Test func malformedFrameTriggersOnError() async throws {
-    let server = RPC(delegate: CaptureDelegate())
+    let captureDelegate = CaptureDelegate()
+    let server = RPC(delegate: captureDelegate)
 
     var body = Data()
     body.append(1)  // type = 1 (request)
     body.append(0xFE)  // start of a varint that needs more bytes — truncated
 
     try await confirmation { confirm in
-      server.onError = { _ in confirm() }
+      captureDelegate.onError = { _ in confirm() }
       server.receive(makeRawFrame(body))
       try await Task.sleep(nanoseconds: 100_000_000)
     }
@@ -192,7 +226,7 @@ struct RPCPair {
 
   @Test func errorErrnoRoundtrip() async throws {
     let pair = RPCPair()
-    pair.server.onRequest = { req in req.reject("fail", code: "ENOENT", errno: 42) }
+    pair.serverDelegate.onRequest = { req in req.reject("fail", code: "ENOENT", errno: 42) }
 
     do {
       _ = try await pair.client.request(1, data: nil)

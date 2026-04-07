@@ -3,6 +3,15 @@ import Foundation
 
 public protocol RPCDelegate: AnyObject {
   func rpc(_ rpc: RPC, send data: Data)
+  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws
+  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async
+  func rpc(_ rpc: RPC, didFailWith error: Error)
+}
+
+extension RPCDelegate {
+  public func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {}
+  public func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {}
+  public func rpc(_ rpc: RPC, didFailWith error: Error) {}
 }
 
 public class RPC {
@@ -14,9 +23,6 @@ public class RPC {
   private var outgoingStreams: [UInt: OutgoingStream] = [:]
 
   public weak var delegate: RPCDelegate?
-  public var onRequest: ((IncomingRequest) async throws -> Void)?
-  public var onEvent: ((IncomingEvent) async -> Void)?
-  public var onError: ((Error) -> Void)?
 
   public init(delegate: RPCDelegate? = nil) {
     self.delegate = delegate
@@ -100,7 +106,8 @@ public class RPC {
       id: req.id, command: req.command, data: req.data, rpc: self,
       requestStream: incoming)
     Task { [weak self] in
-      try? await self?.onRequest?(incomingRequest)
+      guard let self, let delegate = self.delegate else { return }
+      try? await delegate.rpc(self, didReceiveRequest: incomingRequest)
     }
   }
 
@@ -172,7 +179,7 @@ public class RPC {
     do {
       message = try Messages.decodeFrame(frame)
     } catch {
-      onError?(error)
+      delegate?.rpc(self, didFailWith: error)
       return
     }
 
@@ -184,14 +191,14 @@ public class RPC {
         handleRequestStreamOpen(req)
       } else {
         Task { [weak self] in
-          guard let self else { return }
+          guard let self, let delegate = self.delegate else { return }
           if req.id == 0 {
             let event = IncomingEvent(command: req.command, data: req.data)
-            await self.onEvent?(event)
+            await delegate.rpc(self, didReceiveEvent: event)
           } else {
             let incoming = IncomingRequest(
               id: req.id, command: req.command, data: req.data, rpc: self)
-            try? await self.onRequest?(incoming)
+            try? await delegate.rpc(self, didReceiveRequest: incoming)
           }
         }
       }

@@ -80,19 +80,67 @@ import Testing
     }
   }
 
-  @Test func unknownEventFallsThroughToOnUnknownEvent() async throws {
-    let pair = RPCPair()
-    let router = CommandRouter()
-
-    try await confirmation { confirm in
-      router.onUnknownEvent = { event in
+  @Test func unknownEventFallsThroughToDelegate() async throws {
+    final class Captor: CommandRouterDelegate {
+      let confirm: Confirmation
+      init(confirm: Confirmation) { self.confirm = confirm }
+      func commandRouter(
+        _ router: CommandRouter, didReceiveUnknownEvent event: IncomingEvent
+      ) async {
         #expect(event.command == 123)
         confirm()
       }
+    }
+
+    let pair = RPCPair()
+    try await confirmation { confirm in
+      let captor = Captor(confirm: confirm)
+      let router = CommandRouter(delegate: captor)
       pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
 
       pair.client.event(123, data: nil)
       try await Task.sleep(nanoseconds: 50_000_000)
+    }
+  }
+
+  @Test func unknownRequestFallsThroughToDelegate() async throws {
+    final class CustomReject: CommandRouterDelegate {
+      func commandRouter(
+        _ router: CommandRouter, didReceiveUnknownRequest request: IncomingRequest
+      ) async {
+        request.reject("custom miss", code: "ENOENT", errno: 2)
+      }
+    }
+
+    let pair = RPCPair()
+    let delegate = CustomReject()
+    let router = CommandRouter(delegate: delegate)
+    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+
+    do {
+      _ = try await pair.client.request(99, data: nil)
+      Issue.record("Expected rejection")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "custom miss")
+      #expect(err.code == "ENOENT")
+      #expect(err.errno == 2)
+    }
+  }
+
+  @Test func unknownRequestWithDefaultDelegateStillRejects() async throws {
+    // Delegate set but doesn't override the unknown-request method — protocol
+    // extension default should still produce ERR_UNKNOWN_COMMAND.
+    final class EmptyDelegate: CommandRouterDelegate {}
+
+    let pair = RPCPair()
+    let router = CommandRouter(delegate: EmptyDelegate())
+    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+
+    do {
+      _ = try await pair.client.request(99, data: nil)
+      Issue.record("Expected rejection")
+    } catch let err as RPCRemoteError {
+      #expect(err.code == "ERR_UNKNOWN_COMMAND")
     }
   }
 }

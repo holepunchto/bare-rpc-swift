@@ -69,10 +69,12 @@ import Testing
     let router = CommandRouter()
 
     try await confirmation { confirm in
-      router.on(5, eventHandler: { event in
-        #expect(event.data == Data([0xBE]))
-        confirm()
-      })
+      router.on(
+        5,
+        eventHandler: { event in
+          #expect(event.data == Data([0xBE]))
+          confirm()
+        })
       pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
 
       pair.client.event(5, data: Data([0xBE]))

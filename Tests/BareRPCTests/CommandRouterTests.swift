@@ -8,7 +8,7 @@ import Testing
   @Test func routesRequestToRegisteredHandler() async throws {
     let pair = RPCPair()
     let router = CommandRouter()
-    router.on(7) { req in
+    router.on(request: 7) { req in
       #expect(req.command == 7)
       return Data([0xAA]) + (req.data ?? Data())
     }
@@ -34,7 +34,7 @@ import Testing
   @Test func handlerThrowingRPCRemoteErrorPropagates() async throws {
     let pair = RPCPair()
     let router = CommandRouter()
-    router.on(1) { _ in
+    router.on(request: 1) { _ in
       throw RPCRemoteError(message: "nope", code: "EBAD", errno: -7)
     }
     pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
@@ -53,7 +53,7 @@ import Testing
     struct Boom: Error {}
     let pair = RPCPair()
     let router = CommandRouter()
-    router.on(2) { _ in throw Boom() }
+    router.on(request: 2) { _ in throw Boom() }
     pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
 
     do {
@@ -69,12 +69,10 @@ import Testing
     let router = CommandRouter()
 
     try await confirmation { confirm in
-      router.on(
-        5,
-        eventHandler: { event in
-          #expect(event.data == Data([0xBE]))
-          confirm()
-        })
+      router.on(event: 5) { event in
+        #expect(event.data == Data([0xBE]))
+        confirm()
+      }
       pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
 
       pair.client.event(5, data: Data([0xBE]))

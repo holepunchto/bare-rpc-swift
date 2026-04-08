@@ -40,11 +40,11 @@ public final class CommandRouter {
     self.delegate = delegate
   }
 
-  public func on(_ command: UInt, requestHandler handler: @escaping RequestHandler) {
+  public func on(request command: UInt, _ handler: @escaping RequestHandler) {
     requestHandlers[command] = handler
   }
 
-  public func on(_ command: UInt, eventHandler handler: @escaping EventHandler) {
+  public func on(event command: UInt, _ handler: @escaping EventHandler) {
     eventHandlers[command] = handler
   }
 

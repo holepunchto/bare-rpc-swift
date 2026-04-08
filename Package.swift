@@ -19,7 +19,8 @@ let package = Package(
     .testTarget(
       name: "BareRPCTests",
       dependencies: ["BareRPC"],
-      path: "Tests/BareRPCTests"
+      path: "Tests/BareRPCTests",
+      exclude: ["Fixtures/gen_fixtures.js", "Fixtures/rpc_peer.js"]
     ),
   ]
 )

@@ -44,7 +44,7 @@ public final class CommandRouter {
     requestHandlers[command] = handler
   }
 
-  public func onEvent(_ command: UInt, _ handler: @escaping EventHandler) {
+  public func on(_ command: UInt, _ handler: @escaping EventHandler) {
     eventHandlers[command] = handler
   }
 

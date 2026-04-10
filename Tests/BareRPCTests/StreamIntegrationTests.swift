@@ -127,6 +127,26 @@ import Testing
     }
   }
 
+  @Test func responseStreamForceDestroyByInitiator() async throws {
+    let pair = RPCPair()
+
+    pair.serverDelegate.onRequest = { req in
+      #expect(req.command == 42)
+      #expect(req.data == Data("foo".utf8))
+      let stream = req.createResponseStream()!
+      stream.destroy()
+    }
+
+    let incoming = try await pair.client.requestWithResponseStream(
+      command: 42, data: Data("foo".utf8))
+
+    var chunks: [Data] = []
+    for try await chunk in incoming.stream {
+      chunks.append(chunk)
+    }
+    #expect(chunks.isEmpty)
+  }
+
   // MARK: - Empty streams
 
   @Test func emptyRequestStream() async throws {

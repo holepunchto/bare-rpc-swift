@@ -6,9 +6,10 @@ public class IncomingStream {
   public let stream: AsyncThrowingStream<Data, Error>
   private let continuation: AsyncThrowingStream<Data, Error>.Continuation
   private let send: (Data) -> Void
+  var onClose: (() -> Void)?
   private var finished = false
 
-  public init(requestId: UInt, mask: UInt, send: @escaping (Data) -> Void = { _ in }) {
+  public init(requestId: UInt, mask: UInt, send: @escaping (Data) -> Void) {
     self.requestId = requestId
     self.mask = mask
     self.send = send
@@ -26,6 +27,7 @@ public class IncomingStream {
     guard !finished else { return }
     finished = true
     continuation.finish()
+    onClose?()
   }
 
   public func destroy(error: RPCRemoteError? = nil) {
@@ -40,5 +42,6 @@ public class IncomingStream {
       send(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
       continuation.finish()
     }
+    onClose?()
   }
 }

@@ -6,7 +6,7 @@ import Testing
 @Suite struct IncomingStreamTests {
 
   @Test func pushedDataIsReadable() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1, 2, 3]))
     incoming.end()
 
@@ -18,7 +18,7 @@ import Testing
   }
 
   @Test func multipleChunks() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.push(Data([2]))
     incoming.push(Data([3]))
@@ -32,7 +32,7 @@ import Testing
   }
 
   @Test func endFinishesStream() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.end()
 
     var chunks: [Data] = []
@@ -43,7 +43,7 @@ import Testing
   }
 
   @Test func destroyWithoutErrorFinishesStream() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.destroy()
 
@@ -55,7 +55,7 @@ import Testing
   }
 
   @Test func destroyWithErrorThrows() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
 
@@ -74,7 +74,7 @@ import Testing
   }
 
   @Test func pushAfterEndIsIgnored() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.end()
     incoming.push(Data([2]))
@@ -87,7 +87,7 @@ import Testing
   }
 
   @Test func pushAfterDestroyIsIgnored() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.destroy()
     incoming.push(Data([2]))
@@ -100,7 +100,7 @@ import Testing
   }
 
   @Test func doubleEndIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.end()
     incoming.end()
@@ -113,7 +113,7 @@ import Testing
   }
 
   @Test func destroyAfterEndIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.end()
     incoming.destroy()
@@ -126,7 +126,7 @@ import Testing
   }
 
   @Test func endAfterDestroyIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.destroy()
     incoming.end()
@@ -139,7 +139,7 @@ import Testing
   }
 
   @Test func doubleDestroyIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.push(Data([1]))
     incoming.destroy()
     incoming.destroy()
@@ -152,7 +152,7 @@ import Testing
   }
 
   @Test func destroyWithErrorNoDataThrows() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
     incoming.destroy(error: RPCRemoteError(message: "fail", code: "ERR"))
 
     do {
@@ -166,9 +166,25 @@ import Testing
   }
 
   @Test func responseMaskPreserved() async throws {
-    let incoming = IncomingStream(requestId: 5, mask: StreamFlag.response)
+    let incoming = IncomingStream(requestId: 5, mask: StreamFlag.response, send: { _ in })
     #expect(incoming.requestId == 5)
     #expect(incoming.mask == StreamFlag.response)
     incoming.end()
+  }
+
+  @Test func destroyCallsOnClose() async throws {
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
+    var closed = false
+    incoming.onClose = { closed = true }
+    incoming.destroy()
+    #expect(closed)
+  }
+
+  @Test func endCallsOnClose() async throws {
+    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
+    var closed = false
+    incoming.onClose = { closed = true }
+    incoming.end()
+    #expect(closed)
   }
 }

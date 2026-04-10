@@ -101,6 +101,9 @@ public class RPC {
       self?.sendData(data)
     }
     incomingStreams[req.id] = incoming
+    incoming.onClose = { [weak self] in
+      self?.incomingStreams.removeValue(forKey: req.id)
+    }
     // Send OPEN ack: type=STREAM with REQUEST|OPEN
     sendData(Messages.encodeStream(id: req.id, flags: StreamFlag.request | StreamFlag.open))
     // Deliver to onRequest with the stream attached
@@ -128,6 +131,9 @@ public class RPC {
       self?.sendData(data)
     }
     incomingStreams[resp.id] = incoming
+    incoming.onClose = { [weak self] in
+      self?.incomingStreams.removeValue(forKey: resp.id)
+    }
     // Send OPEN ack: type=STREAM with RESPONSE|OPEN
     sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.open))
     continuation.resume(returning: incoming)

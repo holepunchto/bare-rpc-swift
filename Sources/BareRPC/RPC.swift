@@ -97,7 +97,9 @@ public class RPC {
   // Responder receives type=REQUEST with stream=OPEN → create IncomingStream, send ack
   private func handleRequestStreamOpen(_ req: RequestMessage) {
     guard req.id != 0 else { return }  // events (id=0) can't have streams
-    let incoming = IncomingStream(requestId: req.id, mask: StreamFlag.request)
+    let incoming = IncomingStream(requestId: req.id, mask: StreamFlag.request) { [weak self] data in
+      self?.sendData(data)
+    }
     incomingStreams[req.id] = incoming
     // Send OPEN ack: type=STREAM with REQUEST|OPEN
     sendData(Messages.encodeStream(id: req.id, flags: StreamFlag.request | StreamFlag.open))
@@ -120,7 +122,11 @@ public class RPC {
           message: "Expected normal response", code: "ERR_UNEXPECTED_STREAM"))
     }
     guard let continuation = pendingResponseStreams.removeValue(forKey: resp.id) else { return }
-    let incoming = IncomingStream(requestId: resp.id, mask: StreamFlag.response)
+    let incoming = IncomingStream(
+      requestId: resp.id, mask: StreamFlag.response
+    ) { [weak self] data in
+      self?.sendData(data)
+    }
     incomingStreams[resp.id] = incoming
     // Send OPEN ack: type=STREAM with RESPONSE|OPEN
     sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.open))

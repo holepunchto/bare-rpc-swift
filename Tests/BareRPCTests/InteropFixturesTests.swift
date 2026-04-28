@@ -103,6 +103,22 @@ import Testing
     #expect(req.data == Data([1, 2, 3]))
   }
 
+  @Test func requestId2Pow32Varint() throws {
+    // id=2^32 crosses the c.uint boundary into the 9-byte form (0xff + uint64 LE).
+    let fixture = hex("1000000001ff0000000001000000020003010203")
+    let frame = Messages.encodeRequest(
+      id: 0x1_0000_0000, command: 2, data: Data([1, 2, 3]))
+    #expect(frame == fixture)
+
+    guard case .request(let req) = try Messages.decodeFrame(fixture) else {
+      Issue.record("expected request")
+      return
+    }
+    #expect(req.id == 0x1_0000_0000)
+    #expect(req.command == 2)
+    #expect(req.data == Data([1, 2, 3]))
+  }
+
   // MARK: - Response frames
 
   @Test func responseSuccess() throws {
@@ -221,6 +237,36 @@ import Testing
     }
     #expect(s.id == 4)
     #expect(s.flags == StreamFlag.response | StreamFlag.destroy)
+  }
+
+  @Test func streamCloseRequestDirection() throws {
+    let fixture = hex("050000000303fd0201")
+    let frame = Messages.encodeStream(
+      id: 3, flags: StreamFlag.request | StreamFlag.close)
+    #expect(frame == fixture)
+
+    guard case .stream(let s) = try Messages.decodeFrame(fixture) else {
+      Issue.record("expected stream")
+      return
+    }
+    #expect(s.id == 3)
+    #expect(s.flags == StreamFlag.request | StreamFlag.close)
+    #expect(s.data == nil)
+  }
+
+  @Test func streamCloseResponseDirection() throws {
+    let fixture = hex("050000000304fd0202")
+    let frame = Messages.encodeStream(
+      id: 4, flags: StreamFlag.response | StreamFlag.close)
+    #expect(frame == fixture)
+
+    guard case .stream(let s) = try Messages.decodeFrame(fixture) else {
+      Issue.record("expected stream")
+      return
+    }
+    #expect(s.id == 4)
+    #expect(s.flags == StreamFlag.response | StreamFlag.close)
+    #expect(s.data == nil)
   }
 
   @Test func streamErrorRequestDirection() throws {

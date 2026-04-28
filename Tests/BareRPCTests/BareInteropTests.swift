@@ -31,23 +31,39 @@ import Testing
     // chunks and replies with an event 21 carrying the concatenation. This
     // exercises the full request-stream OPEN handshake (REQUEST|OPEN →
     // STREAM|REQUEST|OPEN ack) and DATA / END / CLOSE flow across the wire.
-    try await confirmation { confirm in
-      peer.delegate.onEvent = { event in
-        if event.command == 21 {
-          #expect(event.data == Data("foobarbaz".utf8))
-          confirm()
-        }
-      }
+    let (events, continuation) = AsyncStream<IncomingEvent>.makeStream()
+    peer.delegate.onEvent = { event in
+      continuation.yield(event)
+    }
 
-      let stream = peer.rpc.createRequestStream(command: 5)
-      stream.write(Data("foo".utf8))
-      stream.write(Data("bar".utf8))
-      stream.write(Data("baz".utf8))
-      stream.end()
+    let stream = peer.rpc.createRequestStream(command: 5)
+    stream.write(Data("foo".utf8))
+    stream.write(Data("bar".utf8))
+    stream.write(Data("baz".utf8))
+    stream.end()
 
-      for _ in 0..<200 {
-        try await Task.sleep(nanoseconds: 10_000_000)
-      }
+    for await event in events where event.command == 21 {
+      #expect(event.data == Data("foobarbaz".utf8))
+      continuation.finish()
+    }
+  }
+
+  @Test @MainActor func unknownCommandRejectsWithPeerError() async throws {
+    guard let peer = try BarePeer.spawnIfAvailable() else { return }
+    defer { peer.stop() }
+
+    // Swift sends a regular request for an unknown command. The Bare peer's
+    // default handler throws an Error with code='EUNKNOWN' and errno=-1; the
+    // JS reference encodes that as a typed error response. Verifies that
+    // Swift surfaces the JS-side error fields through `RPCRemoteError`
+    // unchanged across the wire.
+    do {
+      _ = try await peer.rpc.request(99)
+      Issue.record("expected request to be rejected by peer")
+    } catch let error as RPCRemoteError {
+      #expect(error.message == "unknown command 99")
+      #expect(error.code == "EUNKNOWN")
+      #expect(error.errno == -1)
     }
   }
 

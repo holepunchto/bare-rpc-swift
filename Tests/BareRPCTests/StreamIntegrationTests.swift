@@ -3,6 +3,10 @@ import Testing
 
 @testable import BareRPC
 
+private final class StreamHolder<Stream> {
+  var value: Stream?
+}
+
 @Suite struct StreamIntegrationTests {
 
   // MARK: - Request stream (initiator writes, responder reads)
@@ -149,21 +153,20 @@ import Testing
 
   @Test func responseStreamForceDestroyByInitiatee() async throws {
     let pair = RPCPair()
+    let serverStream = StreamHolder<OutgoingStream>()
 
-    try await confirmation { confirm in
-      pair.serverDelegate.onRequest = { req in
-        #expect(req.command == 42)
-        #expect(req.data == Data("foo".utf8))
-        let stream = req.createResponseStream()!
-        stream.onClose = { confirm() }
-      }
-
-      let incoming = try await pair.client.requestWithResponseStream(
-        command: 42, data: Data("foo".utf8))
-      incoming.destroy()
-
-      try await Task.sleep(nanoseconds: 100_000_000)
+    pair.serverDelegate.onRequest = { req in
+      #expect(req.command == 42)
+      #expect(req.data == Data("foo".utf8))
+      serverStream.value = req.createResponseStream()!
     }
+
+    let incoming = try await pair.client.requestWithResponseStream(
+      command: 42, data: Data("foo".utf8))
+    incoming.destroy()
+
+    try await Task.sleep(nanoseconds: 100_000_000)
+    #expect(serverStream.value?.ended == true)
   }
 
   // MARK: - Empty streams

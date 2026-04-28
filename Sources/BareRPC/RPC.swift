@@ -46,9 +46,7 @@ public class RPC {
   public func createRequestStream(command: UInt) -> OutgoingStream {
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
-    let stream = OutgoingStream(requestId: id, mask: StreamFlag.request) { [weak self] data in
-      self?.sendData(data)
-    }
+    let stream = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(stream, forId: id)
     // Send OPEN handshake: type=REQUEST with stream=OPEN
     sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
@@ -89,21 +87,21 @@ public class RPC {
 
   func registerOutgoingStream(_ stream: OutgoingStream, forId id: UInt) {
     outgoingStreams[id] = stream
-    stream.onClose = { [weak self] in
-      self?.outgoingStreams.removeValue(forKey: id)
-    }
+  }
+
+  func removeIncomingStream(forId id: UInt) {
+    incomingStreams.removeValue(forKey: id)
+  }
+
+  func removeOutgoingStream(forId id: UInt) {
+    outgoingStreams.removeValue(forKey: id)
   }
 
   // Responder receives type=REQUEST with stream=OPEN → create IncomingStream, send ack
   private func handleRequestStreamOpen(_ req: RequestMessage) {
     guard req.id != 0 else { return }  // events (id=0) can't have streams
-    let incoming = IncomingStream(requestId: req.id, mask: StreamFlag.request) { [weak self] data in
-      self?.sendData(data)
-    }
+    let incoming = IncomingStream(requestId: req.id, mask: StreamFlag.request, rpc: self)
     incomingStreams[req.id] = incoming
-    incoming.onClose = { [weak self] in
-      self?.incomingStreams.removeValue(forKey: req.id)
-    }
     // Send OPEN ack: type=STREAM with REQUEST|OPEN
     sendData(Messages.encodeStream(id: req.id, flags: StreamFlag.request | StreamFlag.open))
     // Deliver to onRequest with the stream attached
@@ -125,15 +123,8 @@ public class RPC {
           message: "Expected normal response", code: "ERR_UNEXPECTED_STREAM"))
     }
     guard let continuation = pendingResponseStreams.removeValue(forKey: resp.id) else { return }
-    let incoming = IncomingStream(
-      requestId: resp.id, mask: StreamFlag.response
-    ) { [weak self] data in
-      self?.sendData(data)
-    }
+    let incoming = IncomingStream(requestId: resp.id, mask: StreamFlag.response, rpc: self)
     incomingStreams[resp.id] = incoming
-    incoming.onClose = { [weak self] in
-      self?.incomingStreams.removeValue(forKey: resp.id)
-    }
     // Send OPEN ack: type=STREAM with RESPONSE|OPEN
     sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.open))
     continuation.resume(returning: incoming)

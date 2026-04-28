@@ -5,63 +5,77 @@ import Testing
 
 @Suite struct IncomingStreamTests {
 
+  private final class Fixture {
+    let rpc: RPC
+    let delegate: CaptureDelegate
+    let stream: IncomingStream
+
+    init(id: UInt = 1, mask: UInt = StreamFlag.request) {
+      let delegate = CaptureDelegate()
+      let rpc = RPC(delegate: delegate)
+      self.delegate = delegate
+      self.rpc = rpc
+      self.stream = IncomingStream(requestId: id, mask: mask, rpc: rpc)
+    }
+  }
+
   @Test func pushedDataIsReadable() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1, 2, 3]))
-    incoming.end()
+    let f = Fixture()
+    f.stream.push(Data([1, 2, 3]))
+    f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1, 2, 3])])
   }
 
   @Test func multipleChunks() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.push(Data([2]))
-    incoming.push(Data([3]))
-    incoming.end()
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.push(Data([2]))
+    f.stream.push(Data([3]))
+    f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1]), Data([2]), Data([3])])
   }
 
   @Test func endFinishesStream() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.end()
+    let f = Fixture()
+    f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks.isEmpty)
   }
 
   @Test func destroyWithoutErrorFinishesStream() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.destroy()
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.destroy()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func destroyWithErrorThrows() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
 
     var chunks: [Data] = []
     do {
-      for try await chunk in incoming.stream {
+      for try await chunk in f.stream.stream {
         chunks.append(chunk)
       }
       Issue.record("Expected error to be thrown")
@@ -74,89 +88,89 @@ import Testing
   }
 
   @Test func pushAfterEndIsIgnored() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.end()
-    incoming.push(Data([2]))
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.end()
+    f.stream.push(Data([2]))
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func pushAfterDestroyIsIgnored() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.destroy()
-    incoming.push(Data([2]))
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.destroy()
+    f.stream.push(Data([2]))
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func doubleEndIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.end()
-    incoming.end()
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.end()
+    f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func destroyAfterEndIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.end()
-    incoming.destroy()
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.end()
+    f.stream.destroy()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func endAfterDestroyIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.destroy()
-    incoming.end()
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.destroy()
+    f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func doubleDestroyIsNoop() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.push(Data([1]))
-    incoming.destroy()
-    incoming.destroy()
+    let f = Fixture()
+    f.stream.push(Data([1]))
+    f.stream.destroy()
+    f.stream.destroy()
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in f.stream.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
   }
 
   @Test func destroyWithErrorNoDataThrows() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    incoming.destroy(error: RPCRemoteError(message: "fail", code: "ERR"))
+    let f = Fixture()
+    f.stream.destroy(error: RPCRemoteError(message: "fail", code: "ERR"))
 
     do {
-      for try await _ in incoming.stream {
+      for try await _ in f.stream.stream {
         Issue.record("Expected no data")
       }
       Issue.record("Expected error to be thrown")
@@ -166,25 +180,9 @@ import Testing
   }
 
   @Test func responseMaskPreserved() async throws {
-    let incoming = IncomingStream(requestId: 5, mask: StreamFlag.response, send: { _ in })
-    #expect(incoming.requestId == 5)
-    #expect(incoming.mask == StreamFlag.response)
-    incoming.end()
-  }
-
-  @Test func destroyCallsOnClose() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    var closed = false
-    incoming.onClose = { closed = true }
-    incoming.destroy()
-    #expect(closed)
-  }
-
-  @Test func endCallsOnClose() async throws {
-    let incoming = IncomingStream(requestId: 1, mask: StreamFlag.request, send: { _ in })
-    var closed = false
-    incoming.onClose = { closed = true }
-    incoming.end()
-    #expect(closed)
+    let f = Fixture(id: 5, mask: StreamFlag.response)
+    #expect(f.stream.requestId == 5)
+    #expect(f.stream.mask == StreamFlag.response)
+    f.stream.end()
   }
 }

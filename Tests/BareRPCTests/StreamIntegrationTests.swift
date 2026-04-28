@@ -37,7 +37,7 @@ private func waitUntil(
         #expect(req.command == 42)
 
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         #expect(chunks == [Data([1, 2, 3]), Data([4, 5, 6])])
@@ -64,7 +64,7 @@ private func waitUntil(
         }
 
         var count = 0
-        for try await _ in incoming.stream {
+        for try await _ in incoming {
           count += 1
         }
         #expect(count == 1)
@@ -90,7 +90,7 @@ private func waitUntil(
         }
 
         do {
-          for try await _ in incoming.stream {}
+          for try await _ in incoming {}
           Issue.record("Expected error")
         } catch let err as RPCRemoteError {
           #expect(err.message == "aborted")
@@ -120,7 +120,7 @@ private func waitUntil(
     let incoming = try await pair.client.requestWithResponseStream(command: 42)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([10, 20]), Data([30, 40])])
@@ -137,7 +137,7 @@ private func waitUntil(
     let incoming = try await pair.client.requestWithResponseStream(command: 1)
 
     do {
-      for try await _ in incoming.stream {}
+      for try await _ in incoming {}
       Issue.record("Expected error")
     } catch let err as RPCRemoteError {
       #expect(err.message == "failed")
@@ -159,7 +159,7 @@ private func waitUntil(
       command: 42, data: Data("foo".utf8))
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks.isEmpty)
@@ -195,7 +195,7 @@ private func waitUntil(
           return
         }
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         #expect(chunks.isEmpty)
@@ -219,7 +219,7 @@ private func waitUntil(
     let incoming = try await pair.client.requestWithResponseStream(command: 1)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks.isEmpty)
@@ -237,7 +237,7 @@ private func waitUntil(
           return
         }
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         #expect(chunks == [Data([1])])
@@ -263,7 +263,7 @@ private func waitUntil(
     let incoming = try await pair.client.requestWithResponseStream(command: 1)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -285,7 +285,7 @@ private func waitUntil(
       command: 1, data: Data([0xAB]))
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([0xCD])])
@@ -303,7 +303,7 @@ private func waitUntil(
           return
         }
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         // Each stream sends one chunk matching its command

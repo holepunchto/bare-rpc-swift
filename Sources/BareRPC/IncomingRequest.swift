@@ -29,9 +29,7 @@ public class IncomingRequest {
 
   public func createResponseStream() -> OutgoingStream? {
     guard let rpc else { return nil }
-    let stream = OutgoingStream(requestId: id, mask: StreamFlag.response) { [weak rpc] data in
-      rpc?.sendData(data)
-    }
+    let stream = OutgoingStream(requestId: id, mask: StreamFlag.response, rpc: rpc)
     rpc.registerOutgoingStream(stream, forId: id)
     // Send OPEN: type=RESPONSE with stream=OPEN
     rpc.sendData(Messages.encodeResponse(id: id, stream: StreamFlag.open, data: nil))

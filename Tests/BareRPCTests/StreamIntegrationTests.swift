@@ -3,6 +3,24 @@ import Testing
 
 @testable import BareRPC
 
+private final class StreamHolder<Stream> {
+  var value: Stream?
+}
+
+private func waitUntil(
+  timeoutNs: UInt64 = 1_000_000_000,
+  stepNs: UInt64 = 5_000_000,
+  _ condition: () -> Bool
+) async throws -> Bool {
+  var elapsed: UInt64 = 0
+  while elapsed < timeoutNs {
+    if condition() { return true }
+    try await Task.sleep(nanoseconds: stepNs)
+    elapsed += stepNs
+  }
+  return condition()
+}
+
 @Suite struct StreamIntegrationTests {
 
   // MARK: - Request stream (initiator writes, responder reads)
@@ -125,6 +143,44 @@ import Testing
       #expect(err.message == "failed")
       #expect(err.errno == 1)
     }
+  }
+
+  @Test func responseStreamForceDestroyByInitiator() async throws {
+    let pair = RPCPair()
+
+    pair.serverDelegate.onRequest = { req in
+      #expect(req.command == 42)
+      #expect(req.data == Data("foo".utf8))
+      let stream = req.createResponseStream()!
+      stream.destroy()
+    }
+
+    let incoming = try await pair.client.requestWithResponseStream(
+      command: 42, data: Data("foo".utf8))
+
+    var chunks: [Data] = []
+    for try await chunk in incoming.stream {
+      chunks.append(chunk)
+    }
+    #expect(chunks.isEmpty)
+  }
+
+  @Test func responseStreamForceDestroyByInitiatee() async throws {
+    let pair = RPCPair()
+    let serverStream = StreamHolder<OutgoingStream>()
+
+    pair.serverDelegate.onRequest = { req in
+      #expect(req.command == 42)
+      #expect(req.data == Data("foo".utf8))
+      serverStream.value = req.createResponseStream()!
+    }
+
+    let incoming = try await pair.client.requestWithResponseStream(
+      command: 42, data: Data("foo".utf8))
+    incoming.destroy()
+
+    let observed = try await waitUntil { serverStream.value?.ended == true }
+    #expect(observed)
   }
 
   // MARK: - Empty streams

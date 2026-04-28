@@ -3,39 +3,38 @@ import Foundation
 public class OutgoingStream {
   public let requestId: UInt
   public let mask: UInt
-  private let send: (Data) -> Void
-  var onClose: (() -> Void)?
-  private var ended = false
+  private weak var rpc: RPC?
+  public private(set) var ended = false
 
-  public init(requestId: UInt, mask: UInt, send: @escaping (Data) -> Void) {
+  init(requestId: UInt, mask: UInt, rpc: RPC) {
     self.requestId = requestId
     self.mask = mask
-    self.send = send
+    self.rpc = rpc
   }
 
   public func write(_ data: Data) {
     guard !ended else { return }
-    send(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.data, data: data))
+    rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.data, data: data))
   }
 
   public func end() {
     guard !ended else { return }
     ended = true
-    send(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.end))
-    send(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.close))
-    onClose?()
+    rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.end))
+    rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.close))
+    rpc?.removeOutgoingStream(forId: requestId)
   }
 
   public func destroy(error: RPCRemoteError? = nil) {
     guard !ended else { return }
     ended = true
     if let error {
-      send(
+      rpc?.sendData(
         Messages.encodeStream(
           id: requestId, flags: mask | StreamFlag.close | StreamFlag.error, error: error))
     } else {
-      send(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.close))
+      rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.close))
     }
-    onClose?()
+    rpc?.removeOutgoingStream(forId: requestId)
   }
 }

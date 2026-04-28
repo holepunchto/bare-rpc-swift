@@ -5,11 +5,13 @@ public class IncomingStream {
   public let mask: UInt
   public let stream: AsyncThrowingStream<Data, Error>
   private let continuation: AsyncThrowingStream<Data, Error>.Continuation
-  private var finished = false
+  private weak var rpc: RPC?
+  public private(set) var finished = false
 
-  public init(requestId: UInt, mask: UInt) {
+  init(requestId: UInt, mask: UInt, rpc: RPC) {
     self.requestId = requestId
     self.mask = mask
+    self.rpc = rpc
     var cont: AsyncThrowingStream<Data, Error>.Continuation!
     self.stream = AsyncThrowingStream<Data, Error> { cont = $0 }
     self.continuation = cont
@@ -24,15 +26,22 @@ public class IncomingStream {
     guard !finished else { return }
     finished = true
     continuation.finish()
+    rpc?.removeIncomingStream(forId: requestId)
   }
 
+  // Also emits DESTROY when called by the dispatcher on a remote CLOSE+ERROR (JS parity).
   public func destroy(error: RPCRemoteError? = nil) {
     guard !finished else { return }
     finished = true
     if let error {
+      rpc?.sendData(
+        Messages.encodeStream(
+          id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error))
       continuation.finish(throwing: error)
     } else {
+      rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
       continuation.finish()
     }
+    rpc?.removeIncomingStream(forId: requestId)
   }
 }

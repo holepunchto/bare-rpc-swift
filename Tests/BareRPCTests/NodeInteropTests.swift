@@ -114,25 +114,22 @@ final class NodePeer {
     let siblingNodeModules = siblingBareRPC.appendingPathComponent("node_modules")
 
     guard fm.fileExists(atPath: scriptURL.path) else {
-      Issue.record("rpc_peer.js not found at \(scriptURL.path)", severity: .warning)
+      print("skipping node interop: rpc_peer.js not found at \(scriptURL.path)")
       return nil
     }
     guard fm.fileExists(atPath: siblingBareRPC.path) else {
-      Issue.record(
-        "skipping node interop: sibling bare-rpc checkout not found at \(siblingBareRPC.path)",
-        severity: .warning)
+      print(
+        "skipping node interop: sibling bare-rpc checkout not found at \(siblingBareRPC.path)")
       return nil
     }
     guard fm.fileExists(atPath: siblingNodeModules.path) else {
-      Issue.record(
-        "skipping node interop: run `npm install` inside \(siblingBareRPC.path) first",
-        severity: .warning)
+      print("skipping node interop: run `npm install` inside \(siblingBareRPC.path) first")
       return nil
     }
 
     // Find node on PATH.
     guard let nodePath = which("node") else {
-      Issue.record("skipping node interop: `node` not found on PATH", severity: .warning)
+      print("skipping node interop: `node` not found on PATH")
       return nil
     }
 

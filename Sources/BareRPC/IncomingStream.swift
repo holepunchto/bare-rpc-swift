@@ -14,6 +14,7 @@ public class IncomingStream: AsyncSequence {
   private var pendingError: Error?
   private var paused = false
   private var waiter: CheckedContinuation<Data?, Error>?
+  private var iteratorMade = false
 
   init(requestId: UInt, mask: UInt, rpc: RPC, highWaterMark: Int = 16, lowWaterMark: Int = 4) {
     precondition(highWaterMark > 0 && lowWaterMark >= 0 && lowWaterMark < highWaterMark)
@@ -73,7 +74,9 @@ public class IncomingStream: AsyncSequence {
   }
 
   public func makeAsyncIterator() -> AsyncIterator {
-    AsyncIterator(stream: self)
+    precondition(!iteratorMade, "IncomingStream is single-pass; iterate at most once")
+    iteratorMade = true
+    return AsyncIterator(stream: self)
   }
 
   public struct AsyncIterator: AsyncIteratorProtocol {

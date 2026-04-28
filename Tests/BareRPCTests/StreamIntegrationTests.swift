@@ -354,6 +354,24 @@ private func waitUntil(
 
   // MARK: - Backpressure
 
+  @Test func corkOnlyAtHighWaterMark() async throws {
+    let pair = RPCPair()
+    pair.serverDelegate.onRequest = { _ in }
+
+    let outgoing = pair.client.createRequestStream(command: 1)
+
+    // Default highWaterMark is 16; 15 writes stay under the threshold.
+    for i in 0..<15 {
+      await outgoing.write(Data([UInt8(i)]))
+    }
+    #expect(!outgoing.corked)
+
+    // The 16th push hits the watermark and the peer sends PAUSE.
+    await outgoing.write(Data([15]))
+    let paused = try await waitUntil { outgoing.corked }
+    #expect(paused)
+  }
+
   @Test func pauseAndResumeRoundTrip() async throws {
     let pair = RPCPair()
     let serverStream = StreamHolder<IncomingStream>()

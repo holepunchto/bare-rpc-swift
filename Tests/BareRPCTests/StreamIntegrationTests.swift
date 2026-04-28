@@ -45,8 +45,8 @@ private func waitUntil(
       }
 
       let stream = pair.client.createRequestStream(command: 42)
-      stream.write(Data([1, 2, 3]))
-      stream.write(Data([4, 5, 6]))
+      await stream.write(Data([1, 2, 3]))
+      await stream.write(Data([4, 5, 6]))
       stream.end()
 
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -72,7 +72,7 @@ private func waitUntil(
       }
 
       let stream = pair.client.createRequestStream(command: 1)
-      stream.write(Data([0xFF]))
+      await stream.write(Data([0xFF]))
       stream.end()
 
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -112,8 +112,8 @@ private func waitUntil(
 
     pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
-      stream.write(Data([10, 20]))
-      stream.write(Data([30, 40]))
+      await stream.write(Data([10, 20]))
+      await stream.write(Data([30, 40]))
       stream.end()
     }
 
@@ -245,7 +245,7 @@ private func waitUntil(
       }
 
       let stream = pair.client.createRequestStream(command: 1)
-      stream.write(Data([1]))
+      await stream.write(Data([1]))
       stream.destroy()
       try await Task.sleep(nanoseconds: 100_000_000)
     }
@@ -256,7 +256,7 @@ private func waitUntil(
 
     pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
-      stream.write(Data([1]))
+      await stream.write(Data([1]))
       stream.destroy()
     }
 
@@ -277,7 +277,7 @@ private func waitUntil(
     pair.serverDelegate.onRequest = { req in
       #expect(req.data == Data([0xAB]))
       let stream = req.createResponseStream()!
-      stream.write(Data([0xCD]))
+      await stream.write(Data([0xCD]))
       stream.end()
     }
 
@@ -314,8 +314,8 @@ private func waitUntil(
 
       let stream1 = pair.client.createRequestStream(command: 10)
       let stream2 = pair.client.createRequestStream(command: 20)
-      stream1.write(Data([10]))
-      stream2.write(Data([20]))
+      await stream1.write(Data([10]))
+      await stream2.write(Data([20]))
       stream1.end()
       stream2.end()
 

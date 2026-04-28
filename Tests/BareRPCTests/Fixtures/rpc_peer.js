@@ -13,6 +13,8 @@ const { Duplex } = require('bare-stream')
 const RPC = require('bare-rpc')
 
 // Wrap stdin/stdout as a single Duplex so bare-rpc can treat it as a transport.
+// Test-only: we push chunks straight through without honoring backpressure
+// because volumes here are tiny — don't copy this pattern into production.
 const duplex = new Duplex({
   write(chunk, encoding, cb) {
     process.stdout.write(chunk, cb)

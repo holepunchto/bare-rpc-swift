@@ -212,14 +212,8 @@ final class BarePeer {
   func stop() {
     stdoutPipe.fileHandleForReading.readabilityHandler = nil
     try? stdinPipe.fileHandleForWriting.close()
-    // Give the peer a moment to exit cleanly on its own.
-    let deadline = Date().addingTimeInterval(1.0)
-    while process.isRunning && Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.01)
-    }
-    if process.isRunning {
-      process.terminate()
-    }
+    // rpc_peer.js exits on stdin EOF, so waitUntilExit returns promptly. If
+    // the peer ever hangs, swift-testing's per-test timeout fails the test.
     process.waitUntilExit()
   }
 }

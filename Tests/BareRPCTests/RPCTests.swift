@@ -224,6 +224,52 @@ final class RPCPair {
     }
   }
 
+  @Test func oversizedFrameTriggersFailWithLocalError() async throws {
+    let captureDelegate = CaptureDelegate()
+    var captured: Error?
+    captureDelegate.onError = { captured = $0 }
+
+    let server = RPC(delegate: captureDelegate, maxFrameSize: 100)
+
+    // Forge a 4-byte header claiming a 200-byte body — exceeds the 100-byte cap.
+    var header = Data(count: 4)
+    let len: UInt32 = 200
+    header[0] = UInt8(len & 0xFF)
+    header[1] = UInt8((len >> 8) & 0xFF)
+    header[2] = UInt8((len >> 16) & 0xFF)
+    header[3] = UInt8((len >> 24) & 0xFF)
+    server.receive(header)
+
+    guard let err = captured as? RPCLocalError, case .frameTooLarge(let size, let limit) = err
+    else {
+      Issue.record("Expected frameTooLarge, got: \(String(describing: captured))")
+      return
+    }
+    #expect(size == 204)  // 4-byte header + claimed 200-byte body
+    #expect(limit == 100)
+  }
+
+  @Test func receiveAfterFailIsNoop() async throws {
+    let captureDelegate = CaptureDelegate()
+    var errorCount = 0
+    captureDelegate.onError = { _ in errorCount += 1 }
+
+    let server = RPC(delegate: captureDelegate, maxFrameSize: 50)
+
+    var header = Data(count: 4)
+    let len: UInt32 = 100
+    header[0] = UInt8(len & 0xFF)
+    header[1] = UInt8((len >> 8) & 0xFF)
+    header[2] = UInt8((len >> 16) & 0xFF)
+    header[3] = UInt8((len >> 24) & 0xFF)
+    server.receive(header)
+    #expect(errorCount == 1)
+
+    // Subsequent receive must be ignored — even a well-formed frame.
+    server.receive(makeRawFrame(Data([1, 1, 0, 0])))
+    #expect(errorCount == 1)
+  }
+
   @Test func errorErrnoRoundtrip() async throws {
     let pair = RPCPair()
     pair.serverDelegate.onRequest = { req in req.reject("fail", code: "ENOENT", errno: 42) }

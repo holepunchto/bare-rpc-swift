@@ -15,17 +15,21 @@ extension RPCDelegate {
 }
 
 public class RPC {
+  public let maxFrameSize: Int
+
   private var buffer = Data()
   private var nextId: UInt = 1
   private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
   private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
   private var incomingStreams: [UInt: IncomingStream] = [:]
   private var outgoingStreams: [UInt: OutgoingStream] = [:]
+  private var failed = false
 
   public weak var delegate: RPCDelegate?
 
-  public init(delegate: RPCDelegate? = nil) {
+  public init(delegate: RPCDelegate? = nil, maxFrameSize: Int = 16 * 1024 * 1024) {
     self.delegate = delegate
+    self.maxFrameSize = maxFrameSize
   }
 
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
@@ -66,12 +70,18 @@ public class RPC {
   }
 
   public func receive(_ data: Data) {
+    guard !failed else { return }
     buffer.append(data)
     var frames: [Data] = []
+    var oversize: (size: Int, limit: Int)?
     while buffer.count >= 4 {
       var peekState = State(Data(buffer.prefix(4)))
       let bodyLen = Int(try! Primitive.UInt32().decode(&peekState))
       let frameLen = 4 + bodyLen
+      if frameLen > maxFrameSize {
+        oversize = (frameLen, maxFrameSize)
+        break
+      }
       guard buffer.count >= frameLen else { break }
       frames.append(Data(buffer.prefix(frameLen)))
       buffer.removeFirst(frameLen)
@@ -79,10 +89,20 @@ public class RPC {
     for frame in frames {
       dispatchFrame(frame)
     }
+    if let oversize {
+      fail(RPCLocalError.frameTooLarge(size: oversize.size, limit: oversize.limit))
+    }
   }
 
   func sendData(_ data: Data) {
     delegate?.rpc(self, send: data)
+  }
+
+  private func fail(_ error: Error) {
+    guard !failed else { return }
+    failed = true
+    buffer.removeAll()
+    delegate?.rpc(self, didFailWith: error)
   }
 
   func registerOutgoingStream(_ stream: OutgoingStream, forId id: UInt) {

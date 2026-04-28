@@ -1,14 +1,15 @@
 // Generates wire-format fixtures from the JS bare-rpc reference implementation.
-// Run from a checkout of holepunchto/bare-rpc that has its node_modules installed:
+// Run from this directory after `npm install`:
 //
-//     node path/to/gen_fixtures.js
+//     bare gen_fixtures.js
 //
 // The output is a JSON object mapping fixture name to hex-encoded frame bytes.
 // These fixtures are mirrored in InteropFixturesTests.swift so the Swift port
 // can be verified byte-for-byte against JS.
 
 const { header } = require('bare-rpc/messages')
-const { type: t, stream: s } = require('bare-rpc/lib/constants')
+// `lib/constants` isn't in bare-rpc's exports map, so reach in directly.
+const { type: t, stream: s } = require('./node_modules/bare-rpc/lib/constants.js')
 
 function enc(m, body) {
   const state = { start: 0, end: 0, buffer: null }

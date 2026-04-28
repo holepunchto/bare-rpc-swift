@@ -48,6 +48,38 @@ import Testing
     }
   }
 
+  @Test @MainActor func concurrentStreamsBothDirections() async throws {
+    guard let peer = try BarePeer.spawnIfAvailable() else { return }
+    defer { peer.stop() }
+
+    // Open a request stream (cmd 5) and a response stream (cmd 6) at the same
+    // time. Each has its own request id; verifies Swift correctly multiplexes
+    // inbound stream frames by id rather than assuming one stream at a time.
+    let (events, continuation) = AsyncStream<IncomingEvent>.makeStream()
+    peer.delegate.onEvent = { event in continuation.yield(event) }
+
+    let outgoing = peer.rpc.createRequestStream(command: 5)
+    outgoing.write(Data("foo".utf8))
+    outgoing.write(Data("bar".utf8))
+    outgoing.write(Data("baz".utf8))
+    outgoing.end()
+
+    async let incomingChunks: [Data] = {
+      let incoming = try await peer.rpc.requestWithResponseStream(command: 6)
+      var chunks: [Data] = []
+      for try await chunk in incoming.stream { chunks.append(chunk) }
+      return chunks
+    }()
+
+    for await event in events where event.command == 21 {
+      #expect(event.data == Data("foobarbaz".utf8))
+      continuation.finish()
+    }
+
+    let chunks = try await incomingChunks
+    #expect(chunks == [Data([0x0A]), Data([0x14, 0x1E]), Data([0x28, 0x32, 0x3C])])
+  }
+
   @Test @MainActor func unknownCommandRejectsWithPeerError() async throws {
     guard let peer = try BarePeer.spawnIfAvailable() else { return }
     defer { peer.stop() }
@@ -203,8 +235,9 @@ final class BarePeerDelegate: RPCDelegate, @unchecked Sendable {
   }
 
   func rpc(_ rpc: RPC, send data: Data) {
-    // FileHandle.write is synchronous; bare-rpc-swift calls send from the
-    // caller's context (main actor in these tests).
+    // Writes are serialized by the MainActor hop in spawnIfAvailable's
+    // readability handler, so concurrent calls into FileHandle.write don't
+    // overlap.
     do {
       try writeHandle.write(contentsOf: data)
     } catch {
@@ -213,7 +246,9 @@ final class BarePeerDelegate: RPCDelegate, @unchecked Sendable {
   }
 
   func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
-    // Bare peer is always the responder in these tests.
+    // Bare peer is always the responder; an inbound request would be a
+    // regression — surface it instead of silently dropping it.
+    Issue.record("unexpected request from peer: command=\(request.command)")
   }
 
   func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {
@@ -230,7 +265,7 @@ final class BarePeerDelegate: RPCDelegate, @unchecked Sendable {
 // MARK: - Helpers
 
 private func which(_ binary: String) -> String? {
-  let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/local/bin"
+  guard let pathEnv = ProcessInfo.processInfo.environment["PATH"] else { return nil }
   for dir in pathEnv.split(separator: ":") {
     let candidate = "\(dir)/\(binary)"
     if FileManager.default.isExecutableFile(atPath: candidate) {

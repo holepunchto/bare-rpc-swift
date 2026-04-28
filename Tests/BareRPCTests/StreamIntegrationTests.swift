@@ -351,4 +351,33 @@ private func waitUntil(
       #expect(err.code == "ERR_UNEXPECTED_STREAM")
     }
   }
+
+  // MARK: - Backpressure
+
+  @Test func pauseAndResumeRoundTrip() async throws {
+    let pair = RPCPair()
+    let serverStream = StreamHolder<IncomingStream>()
+
+    pair.serverDelegate.onRequest = { req in
+      serverStream.value = req.requestStream
+    }
+
+    let outgoing = pair.client.createRequestStream(command: 1)
+    // Default highWaterMark is 16; fill exactly to trigger PAUSE.
+    for i in 0..<16 {
+      await outgoing.write(Data([UInt8(i)]))
+    }
+
+    let paused = try await waitUntil { outgoing.corked && serverStream.value != nil }
+    #expect(paused)
+
+    // Drain 12 chunks → buffer hits lowWaterMark (4) → RESUME.
+    var iter = serverStream.value!.makeAsyncIterator()
+    for _ in 0..<12 {
+      _ = try await iter.next()
+    }
+
+    let resumed = try await waitUntil { !outgoing.corked }
+    #expect(resumed)
+  }
 }

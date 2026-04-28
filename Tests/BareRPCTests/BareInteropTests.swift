@@ -21,7 +21,17 @@ import Testing
 /// If either prerequisite is missing the tests early-return with a printed
 /// notice locally, but record a hard failure when `CI=true` is set so a
 /// misconfigured runner can never silently false-pass.
-@Suite struct BareInteropTests {
+///
+/// The suite-wide `.timeLimit` keeps a stuck peer from hanging CI for hours.
+@Suite(.timeLimit(.minutes(1))) struct BareInteropTests {
+
+  // Commands the Bare peer handles. Mirrored in rpc_peer.js.
+  enum Command {
+    static let requestStreamCollector: UInt = 5
+    static let responseStreamProducer: UInt = 6
+    static let requestStreamCollectorReply: UInt = 21
+    static let unknown: UInt = 99
+  }
 
   @Test @MainActor func requestStreamToBare() async throws {
     guard let peer = try BarePeer.spawnIfAvailable() else { return }
@@ -36,13 +46,13 @@ import Testing
       continuation.yield(event)
     }
 
-    let stream = peer.rpc.createRequestStream(command: 5)
+    let stream = peer.rpc.createRequestStream(command: Command.requestStreamCollector)
     stream.write(Data("foo".utf8))
     stream.write(Data("bar".utf8))
     stream.write(Data("baz".utf8))
     stream.end()
 
-    for await event in events where event.command == 21 {
+    for await event in events where event.command == Command.requestStreamCollectorReply {
       #expect(event.data == Data("foobarbaz".utf8))
       continuation.finish()
     }
@@ -58,20 +68,21 @@ import Testing
     let (events, continuation) = AsyncStream<IncomingEvent>.makeStream()
     peer.delegate.onEvent = { event in continuation.yield(event) }
 
-    let outgoing = peer.rpc.createRequestStream(command: 5)
+    let outgoing = peer.rpc.createRequestStream(command: Command.requestStreamCollector)
     outgoing.write(Data("foo".utf8))
     outgoing.write(Data("bar".utf8))
     outgoing.write(Data("baz".utf8))
     outgoing.end()
 
     async let incomingChunks: [Data] = {
-      let incoming = try await peer.rpc.requestWithResponseStream(command: 6)
+      let incoming = try await peer.rpc.requestWithResponseStream(
+        command: Command.responseStreamProducer)
       var chunks: [Data] = []
       for try await chunk in incoming.stream { chunks.append(chunk) }
       return chunks
     }()
 
-    for await event in events where event.command == 21 {
+    for await event in events where event.command == Command.requestStreamCollectorReply {
       #expect(event.data == Data("foobarbaz".utf8))
       continuation.finish()
     }
@@ -90,7 +101,7 @@ import Testing
     // Swift surfaces the JS-side error fields through `RPCRemoteError`
     // unchanged across the wire.
     do {
-      _ = try await peer.rpc.request(99)
+      _ = try await peer.rpc.request(Command.unknown)
       Issue.record("expected request to be rejected by peer")
     } catch let error as RPCRemoteError {
       #expect(error.message == "unknown command 99")
@@ -107,7 +118,8 @@ import Testing
     // three fixed chunks and ends. This exercises the response-stream
     // handshake (REQUEST → RESPONSE|OPEN → STREAM|RESPONSE|OPEN ack) and
     // DATA / END / CLOSE delivery in the JS → Swift direction.
-    let incoming = try await peer.rpc.requestWithResponseStream(command: 6)
+    let incoming = try await peer.rpc.requestWithResponseStream(
+      command: Command.responseStreamProducer)
 
     var chunks: [Data] = []
     for try await chunk in incoming.stream {
@@ -213,7 +225,8 @@ final class BarePeer {
     stdoutPipe.fileHandleForReading.readabilityHandler = nil
     try? stdinPipe.fileHandleForWriting.close()
     // rpc_peer.js exits on stdin EOF, so waitUntilExit returns promptly. If
-    // the peer ever hangs, swift-testing's per-test timeout fails the test.
+    // the peer ever hangs, the suite-wide `.timeLimit` fails the test
+    // before this call can wedge CI.
     process.waitUntilExit()
   }
 }

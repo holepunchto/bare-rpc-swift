@@ -12,6 +12,11 @@ const process = require('bare-process')
 const { Duplex } = require('bare-stream')
 const RPC = require('bare-rpc')
 
+// Mirrored in BareInteropTests.swift (`Command` enum). Keep in sync.
+const CMD_REQUEST_STREAM_COLLECTOR = 5
+const CMD_RESPONSE_STREAM_PRODUCER = 6
+const CMD_REQUEST_STREAM_COLLECTOR_REPLY = 21
+
 // Wrap stdin/stdout as a single Duplex so bare-rpc can treat it as a transport.
 // Test-only: we push chunks straight through without honoring backpressure
 // because volumes here are tiny — don't copy this pattern into production.
@@ -33,21 +38,20 @@ const rpc = new RPC(duplex, async (req) => {
   if (typeof req.reply !== 'function') return
 
   switch (req.command) {
-    case 5: {
-      // request-stream collector: read all chunks from the inbound request
-      // stream and emit the concatenation as event 21. Used to verify Swift
-      // → JS request streaming since Swift's createRequestStream is
-      // fire-and-forget and has no reply channel.
+    case CMD_REQUEST_STREAM_COLLECTOR: {
+      // Read all chunks from the inbound request stream and emit the
+      // concatenation as a reply event. Used to verify Swift → JS request
+      // streaming since Swift's createRequestStream is fire-and-forget and
+      // has no reply channel.
       const incoming = req.createRequestStream()
       const chunks = []
       for await (const chunk of incoming) chunks.push(chunk)
-      rpc.event(21).send(Buffer.concat(chunks))
+      rpc.event(CMD_REQUEST_STREAM_COLLECTOR_REPLY).send(Buffer.concat(chunks))
       break
     }
-    case 6: {
-      // response-stream producer: write three fixed chunks to the outbound
-      // response stream, then end. Used to verify JS → Swift response
-      // streaming.
+    case CMD_RESPONSE_STREAM_PRODUCER: {
+      // Write three fixed chunks to the outbound response stream, then end.
+      // Used to verify JS → Swift response streaming.
       const outgoing = req.createResponseStream()
       outgoing.write(Buffer.from([0x0a]))
       outgoing.write(Buffer.from([0x14, 0x1e]))

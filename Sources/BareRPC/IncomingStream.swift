@@ -29,6 +29,7 @@ public class IncomingStream {
     rpc?.removeIncomingStream(forId: requestId)
   }
 
+  // Also emits DESTROY when called by the dispatcher on a remote CLOSE+ERROR (JS parity).
   public func destroy(error: RPCRemoteError? = nil) {
     guard !finished else { return }
     finished = true

@@ -7,6 +7,20 @@ private final class StreamHolder<Stream> {
   var value: Stream?
 }
 
+private func waitUntil(
+  timeoutNs: UInt64 = 1_000_000_000,
+  stepNs: UInt64 = 5_000_000,
+  _ condition: () -> Bool
+) async throws -> Bool {
+  var elapsed: UInt64 = 0
+  while elapsed < timeoutNs {
+    if condition() { return true }
+    try await Task.sleep(nanoseconds: stepNs)
+    elapsed += stepNs
+  }
+  return condition()
+}
+
 @Suite struct StreamIntegrationTests {
 
   // MARK: - Request stream (initiator writes, responder reads)
@@ -165,8 +179,8 @@ private final class StreamHolder<Stream> {
       command: 42, data: Data("foo".utf8))
     incoming.destroy()
 
-    try await Task.sleep(nanoseconds: 100_000_000)
-    #expect(serverStream.value?.ended == true)
+    let observed = try await waitUntil { serverStream.value?.ended == true }
+    #expect(observed)
   }
 
   // MARK: - Empty streams

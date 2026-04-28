@@ -3,8 +3,9 @@ import Testing
 
 @testable import BareRPC
 
-/// Live interop tests that run the JavaScript `bare-rpc` reference as a Node
-/// subprocess and exchange streaming frames with it over stdio pipes.
+/// Live interop tests that run the JavaScript `bare-rpc` reference under the
+/// Bare runtime as a subprocess and exchange streaming frames with it over
+/// stdio pipes.
 ///
 /// Scope: only the bidirectional stream OPEN handshake and DATA / END / CLOSE
 /// flow. Single-frame request/response/event semantics are already covered
@@ -14,20 +15,19 @@ import Testing
 /// fixtures alone — it depends on both sides agreeing on ordering and timing.
 ///
 /// These tests require:
-///   - a `node` binary on PATH
-///   - a sibling checkout of holepunchto/bare-rpc at `../bare-rpc` with
-///     `node_modules` installed (`npm install`)
+///   - a `bare` binary on PATH (`npm install -g bare`)
+///   - `npm install` to have been run in `Tests/BareRPCTests/Fixtures/`
 ///
-/// If either prerequisite is missing the tests early-return with a warning
-/// rather than failing, so they don't break contributors who haven't set up
-/// the sibling checkout.
-@Suite struct NodeInteropTests {
+/// If either prerequisite is missing the tests early-return with a printed
+/// notice locally, but record a hard failure when `CI=true` is set so a
+/// misconfigured runner can never silently false-pass.
+@Suite struct BareInteropTests {
 
-  @Test @MainActor func requestStreamToNode() async throws {
-    guard let peer = try NodePeer.spawnIfAvailable() else { return }
+  @Test @MainActor func requestStreamToBare() async throws {
+    guard let peer = try BarePeer.spawnIfAvailable() else { return }
     defer { peer.stop() }
 
-    // Swift opens a request stream to command 5; the Node peer collects all
+    // Swift opens a request stream to command 5; the Bare peer collects all
     // chunks and replies with an event 21 carrying the concatenation. This
     // exercises the full request-stream OPEN handshake (REQUEST|OPEN →
     // STREAM|REQUEST|OPEN ack) and DATA / END / CLOSE flow across the wire.
@@ -51,11 +51,11 @@ import Testing
     }
   }
 
-  @Test @MainActor func responseStreamFromNode() async throws {
-    guard let peer = try NodePeer.spawnIfAvailable() else { return }
+  @Test @MainActor func responseStreamFromBare() async throws {
+    guard let peer = try BarePeer.spawnIfAvailable() else { return }
     defer { peer.stop() }
 
-    // Swift requests a response stream for command 6; the Node peer writes
+    // Swift requests a response stream for command 6; the Bare peer writes
     // three fixed chunks and ends. This exercises the response-stream
     // handshake (REQUEST → RESPONSE|OPEN → STREAM|RESPONSE|OPEN ack) and
     // DATA / END / CLOSE delivery in the JS → Swift direction.
@@ -70,14 +70,14 @@ import Testing
 
 }
 
-// MARK: - Node peer harness
+// MARK: - Bare peer harness
 
-/// Spawns `node rpc_peer.js` and wires its stdin/stdout to a Swift `RPC`
+/// Spawns `bare rpc_peer.js` and wires its stdin/stdout to a Swift `RPC`
 /// instance. All interaction with `RPC` is serialized on the main actor.
 @MainActor
-final class NodePeer {
+final class BarePeer {
   let rpc: RPC
-  let delegate: NodePeerDelegate
+  let delegate: BarePeerDelegate
   private let process: Process
   private let stdinPipe: Pipe
   private let stdoutPipe: Pipe
@@ -86,50 +86,40 @@ final class NodePeer {
     self.process = process
     self.stdinPipe = stdinPipe
     self.stdoutPipe = stdoutPipe
-    self.delegate = NodePeerDelegate(writeHandle: stdinPipe.fileHandleForWriting)
+    self.delegate = BarePeerDelegate(writeHandle: stdinPipe.fileHandleForWriting)
     self.rpc = RPC(delegate: delegate)
   }
 
-  /// Returns nil (with a warning) if the environment is missing node or the
-  /// sibling bare-rpc checkout.
-  static func spawnIfAvailable() throws -> NodePeer? {
+  /// Returns nil when prerequisites are missing. On CI (`CI=true`) a missing
+  /// prerequisite is recorded as a test issue so we don't silently no-op.
+  static func spawnIfAvailable() throws -> BarePeer? {
     let fm = FileManager.default
+    let isCI = ProcessInfo.processInfo.environment["CI"] == "true"
 
-    // Locate the script relative to this source file.
+    func report(_ message: String) {
+      if isCI {
+        Issue.record(Comment(rawValue: "bare interop unavailable on CI: \(message)"))
+      } else {
+        print("skipping bare interop: \(message)")
+      }
+    }
+
     let thisFile = URL(fileURLWithPath: #filePath)
     let fixturesDir = thisFile.deletingLastPathComponent()
       .appendingPathComponent("Fixtures")
     let scriptURL = fixturesDir.appendingPathComponent("rpc_peer.js")
-
-    // Locate sibling bare-rpc checkout: ../../../bare-rpc relative to Tests/BareRPCTests/.
-    let repoRoot =
-      thisFile
-      .deletingLastPathComponent()  // BareRPCTests
-      .deletingLastPathComponent()  // Tests
-      .deletingLastPathComponent()  // bare-rpc-swift
-    let siblingBareRPC =
-      repoRoot
-      .deletingLastPathComponent()
-      .appendingPathComponent("bare-rpc")
-    let siblingNodeModules = siblingBareRPC.appendingPathComponent("node_modules")
+    let nodeModules = fixturesDir.appendingPathComponent("node_modules")
 
     guard fm.fileExists(atPath: scriptURL.path) else {
-      print("skipping node interop: rpc_peer.js not found at \(scriptURL.path)")
+      report("rpc_peer.js not found at \(scriptURL.path)")
       return nil
     }
-    guard fm.fileExists(atPath: siblingBareRPC.path) else {
-      print(
-        "skipping node interop: sibling bare-rpc checkout not found at \(siblingBareRPC.path)")
+    guard fm.fileExists(atPath: nodeModules.path) else {
+      report("run `npm install` in \(fixturesDir.path) first")
       return nil
     }
-    guard fm.fileExists(atPath: siblingNodeModules.path) else {
-      print("skipping node interop: run `npm install` inside \(siblingBareRPC.path) first")
-      return nil
-    }
-
-    // Find node on PATH.
-    guard let nodePath = which("node") else {
-      print("skipping node interop: `node` not found on PATH")
+    guard let barePath = which("bare") else {
+      report("`bare` not found on PATH (`npm install -g bare`)")
       return nil
     }
 
@@ -138,13 +128,13 @@ final class NodePeer {
     let stderrPipe = Pipe()
 
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: nodePath)
-    process.arguments = [scriptURL.path, siblingBareRPC.path]
+    process.executableURL = URL(fileURLWithPath: barePath)
+    process.arguments = [scriptURL.path]
     process.standardInput = stdinPipe
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
 
-    let peer = NodePeer(process: process, stdinPipe: stdinPipe, stdoutPipe: stdoutPipe)
+    let peer = BarePeer(process: process, stdinPipe: stdinPipe, stdoutPipe: stdoutPipe)
 
     // Read from the peer on a background thread, but hop onto MainActor to
     // call into RPC so all state mutation is serialized.
@@ -186,7 +176,7 @@ final class NodePeer {
   }
 }
 
-final class NodePeerDelegate: RPCDelegate, @unchecked Sendable {
+final class BarePeerDelegate: RPCDelegate, @unchecked Sendable {
   var onEvent: (@MainActor (IncomingEvent) -> Void)?
   var onError: ((Error) -> Void)?
 
@@ -207,7 +197,7 @@ final class NodePeerDelegate: RPCDelegate, @unchecked Sendable {
   }
 
   func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
-    // Node peer is always the responder in these tests.
+    // Bare peer is always the responder in these tests.
   }
 
   func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {

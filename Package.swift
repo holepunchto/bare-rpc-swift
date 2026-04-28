@@ -20,7 +20,7 @@ let package = Package(
       name: "BareRPCTests",
       dependencies: ["BareRPC"],
       path: "Tests/BareRPCTests",
-      exclude: ["Fixtures/gen_fixtures.js", "Fixtures/rpc_peer.js"]
+      exclude: ["Fixtures"]
     ),
   ]
 )

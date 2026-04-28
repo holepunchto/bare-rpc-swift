@@ -1,24 +1,16 @@
-// Live RPC peer used by NodeInteropTests.swift.
+// Live RPC peer used by BareInteropTests.swift.
 //
 // Reads bare-rpc frames from stdin and writes them to stdout, running the
 // reference JavaScript implementation on the other side of a real pipe.
 //
-// Invoked as: node rpc_peer.js <path-to-bare-rpc-checkout>
+// Invoked as: bare rpc_peer.js
 //
-// The path argument lets us point at a sibling checkout of holepunchto/bare-rpc
-// (with its node_modules installed) without requiring an npm install inside
-// this repo.
+// Requires `npm install` to have been run in this directory so that
+// bare-rpc and bare-process are resolvable.
 
-const path = require('path')
-const { Duplex } = require('stream')
-
-const bareRpcPath = process.argv[2]
-if (!bareRpcPath) {
-  console.error('usage: node rpc_peer.js <path-to-bare-rpc>')
-  process.exit(2)
-}
-
-const RPC = require(path.resolve(bareRpcPath))
+const process = require('bare-process')
+const { Duplex } = require('bare-stream')
+const RPC = require('bare-rpc')
 
 // Wrap stdin/stdout as a single Duplex so bare-rpc can treat it as a transport.
 const duplex = new Duplex({
@@ -70,9 +62,8 @@ const rpc = new RPC(duplex, async (req) => {
   }
 })
 
-// Silence unhandled rejections that might come from the bare-rpc internals
-// during shutdown so they don't pollute stderr and confuse the Swift harness.
-process.on('uncaughtException', (err) => {
+// Surface any uncaught error to stderr so the Swift harness can see it.
+Bare.on('uncaughtException', (err) => {
   process.stderr.write('peer uncaught: ' + err.message + '\n')
   process.exit(1)
 })

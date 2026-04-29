@@ -175,22 +175,6 @@ public class RPC {
       return
     }
 
-    if msg.flags & StreamFlag.data != 0 {
-      if let incoming = incomingStreams[msg.id] {
-        if let data = msg.data {
-          incoming.push(data)
-        }
-      }
-      return
-    }
-
-    if msg.flags & StreamFlag.end != 0 {
-      if let incoming = incomingStreams[msg.id] {
-        incoming.end()
-      }
-      return
-    }
-
     if msg.flags & StreamFlag.close != 0 {
       if msg.flags & StreamFlag.error != 0 {
         if let incoming = incomingStreams.removeValue(forKey: msg.id) {
@@ -201,6 +185,28 @@ public class RPC {
           incoming.end()
         }
       }
+      return
+    }
+
+    if msg.flags & StreamFlag.pause != 0 {
+      outgoingStreams[msg.id]?.cork()
+      return
+    }
+
+    if msg.flags & StreamFlag.resume != 0 {
+      outgoingStreams[msg.id]?.uncork()
+      return
+    }
+
+    if msg.flags & StreamFlag.data != 0 {
+      if let incoming = incomingStreams[msg.id], let data = msg.data {
+        incoming.push(data)
+      }
+      return
+    }
+
+    if msg.flags & StreamFlag.end != 0 {
+      incomingStreams[msg.id]?.end()
       return
     }
 

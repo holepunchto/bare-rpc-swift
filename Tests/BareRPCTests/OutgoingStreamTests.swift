@@ -31,10 +31,10 @@ import Testing
     return s
   }
 
-  @Test func writeSendsDataFlag() throws {
+  @Test func writeSendsDataFlag() async throws {
     let f = Fixture()
     let payload = Data([0xDE, 0xAD])
-    f.stream.write(payload)
+    await f.stream.write(payload)
     #expect(f.sent.count == 1)
     let s = try decodeStream(f.sent[0])
     #expect(s.id == 1)
@@ -71,11 +71,11 @@ import Testing
     #expect(s.error?.errno == 42)
   }
 
-  @Test func writeAfterEndIsNoop() throws {
+  @Test func writeAfterEndIsNoop() async throws {
     let f = Fixture()
     f.stream.end()
     let countAfterEnd = f.sent.count
-    f.stream.write(Data([1, 2, 3]))
+    await f.stream.write(Data([1, 2, 3]))
     #expect(f.sent.count == countAfterEnd)
   }
 
@@ -87,11 +87,11 @@ import Testing
     #expect(f.sent.count == countAfterEnd)
   }
 
-  @Test func writeAfterDestroyIsNoop() throws {
+  @Test func writeAfterDestroyIsNoop() async throws {
     let f = Fixture()
     f.stream.destroy()
     let countAfterDestroy = f.sent.count
-    f.stream.write(Data([1, 2, 3]))
+    await f.stream.write(Data([1, 2, 3]))
     #expect(f.sent.count == countAfterDestroy)
   }
 
@@ -103,11 +103,11 @@ import Testing
     #expect(f.sent.count == countAfterDestroy)
   }
 
-  @Test func multipleWritesThenEnd() throws {
+  @Test func multipleWritesThenEnd() async throws {
     let f = Fixture()
-    f.stream.write(Data([1]))
-    f.stream.write(Data([2]))
-    f.stream.write(Data([3]))
+    await f.stream.write(Data([1]))
+    await f.stream.write(Data([2]))
+    await f.stream.write(Data([3]))
     f.stream.end()
     // 3 DATA + 1 END + 1 CLOSE = 5 frames
     #expect(f.sent.count == 5)
@@ -122,9 +122,9 @@ import Testing
     #expect(closeMsg.flags == StreamFlag.request | StreamFlag.close)
   }
 
-  @Test func endWithResponseMask() throws {
+  @Test func endWithResponseMask() async throws {
     let f = Fixture(mask: StreamFlag.response)
-    f.stream.write(Data([0xAB]))
+    await f.stream.write(Data([0xAB]))
     f.stream.end()
     let dataMsg = try decodeStream(f.sent[0])
     #expect(dataMsg.flags == StreamFlag.response | StreamFlag.data)

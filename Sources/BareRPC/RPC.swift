@@ -102,6 +102,16 @@ public class RPC {
     guard !failed else { return }
     failed = true
     buffer.removeAll()
+    let drainedPending = pending
+    pending.removeAll()
+    let drainedStreams = pendingResponseStreams
+    pendingResponseStreams.removeAll()
+    for (_, continuation) in drainedPending {
+      continuation.resume(throwing: error)
+    }
+    for (_, continuation) in drainedStreams {
+      continuation.resume(throwing: error)
+    }
     delegate?.rpc(self, didFailWith: error)
   }
 

@@ -47,9 +47,9 @@ import Testing
     }
 
     let stream = peer.rpc.createRequestStream(command: Command.requestStreamCollector)
-    stream.write(Data("foo".utf8))
-    stream.write(Data("bar".utf8))
-    stream.write(Data("baz".utf8))
+    await stream.write(Data("foo".utf8))
+    await stream.write(Data("bar".utf8))
+    await stream.write(Data("baz".utf8))
     stream.end()
 
     for await event in events where event.command == Command.requestStreamCollectorReply {
@@ -69,16 +69,16 @@ import Testing
     peer.delegate.onEvent = { event in continuation.yield(event) }
 
     let outgoing = peer.rpc.createRequestStream(command: Command.requestStreamCollector)
-    outgoing.write(Data("foo".utf8))
-    outgoing.write(Data("bar".utf8))
-    outgoing.write(Data("baz".utf8))
+    await outgoing.write(Data("foo".utf8))
+    await outgoing.write(Data("bar".utf8))
+    await outgoing.write(Data("baz".utf8))
     outgoing.end()
 
     async let incomingChunks: [Data] = {
       let incoming = try await peer.rpc.requestWithResponseStream(
         command: Command.responseStreamProducer)
       var chunks: [Data] = []
-      for try await chunk in incoming.stream { chunks.append(chunk) }
+      for try await chunk in incoming { chunks.append(chunk) }
       return chunks
     }()
 
@@ -122,7 +122,7 @@ import Testing
       command: Command.responseStreamProducer)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([0x0A]), Data([0x14, 0x1E]), Data([0x28, 0x32, 0x3C])])

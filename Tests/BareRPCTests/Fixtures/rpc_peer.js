@@ -5,10 +5,10 @@
 //
 // Invoked as: bare rpc_peer.js
 //
-// Requires `npm install` to have been run in this directory so that
-// bare-rpc and bare-process are resolvable.
+// Requires `npm install` to have been run at the repo root so that
+// bare-rpc, bare-stream, and bare-stdio are resolvable.
 
-const process = require('bare-process')
+const io = require('bare-stdio')
 const { Duplex } = require('bare-stream')
 const RPC = require('bare-rpc')
 
@@ -22,15 +22,15 @@ const CMD_REQUEST_STREAM_COLLECTOR_REPLY = 21
 // because volumes here are tiny — don't copy this pattern into production.
 const duplex = new Duplex({
   write(chunk, encoding, cb) {
-    process.stdout.write(chunk, cb)
+    io.out.write(chunk, cb)
   },
   read() {}
 })
 
-process.stdin.on('data', (chunk) => duplex.push(chunk))
-process.stdin.on('end', () => {
+io.in.on('data', (chunk) => duplex.push(chunk))
+io.in.on('end', () => {
   duplex.push(null)
-  process.exit(0)
+  Bare.exit(0)
 })
 
 const rpc = new RPC(duplex, async (req) => {
@@ -70,6 +70,6 @@ const rpc = new RPC(duplex, async (req) => {
 
 // Surface any uncaught error to stderr so the Swift harness can see it.
 Bare.on('uncaughtException', (err) => {
-  process.stderr.write('peer uncaught: ' + err.message + '\n')
-  process.exit(1)
+  io.err.write('peer uncaught: ' + err.message + '\n')
+  Bare.exit(1)
 })

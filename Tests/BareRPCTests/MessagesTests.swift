@@ -1,3 +1,4 @@
+import CompactEncoding
 import Foundation
 import Testing
 
@@ -91,9 +92,7 @@ import Testing
   @Test func framePrefixIsBodyLength() throws {
     let payload = Data([1, 2, 3])
     let frame = Messages.encodeRequest(id: 1, command: 0, data: payload)
-    let bodyLen =
-      UInt32(frame[0]) | (UInt32(frame[1]) << 8) | (UInt32(frame[2]) << 16)
-      | (UInt32(frame[3]) << 24)
+    let bodyLen = readBodyLen(frame)
     #expect(Int(bodyLen) == frame.count - 4)
   }
 
@@ -155,12 +154,20 @@ import Testing
 }
 
 func makeRawFrame(_ body: Data) -> Data {
-  let len = UInt32(body.count)
-  var frame = Data(count: 4)
-  frame[0] = UInt8(len & 0xFF)
-  frame[1] = UInt8((len >> 8) & 0xFF)
-  frame[2] = UInt8((len >> 16) & 0xFF)
-  frame[3] = UInt8((len >> 24) & 0xFF)
+  var frame = makeRawHeader(claimingBodyLen: UInt32(body.count))
   frame.append(body)
   return frame
+}
+
+func makeRawHeader(claimingBodyLen len: UInt32) -> Data {
+  var state = State()
+  Primitive.UInt32().preencode(&state, len)
+  state.allocate()
+  try! Primitive.UInt32().encode(&state, len)
+  return state.buffer
+}
+
+func readBodyLen(_ frame: Data) -> UInt32 {
+  var state = State(frame)
+  return try! Primitive.UInt32().decode(&state)
 }

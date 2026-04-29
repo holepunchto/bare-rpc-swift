@@ -15,20 +15,29 @@ extension RPCDelegate {
 }
 
 public class RPC {
+  public static let defaultMaxFrameSize = 16 * 1024 * 1024
+
+  public let maxFrameSize: Int
+
   private var buffer = Data()
   private var nextId: UInt = 1
   private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
   private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
   private var incomingStreams: [UInt: IncomingStream] = [:]
   private var outgoingStreams: [UInt: OutgoingStream] = [:]
+  private var failed = false
+  private var failureError: Error?
 
   public weak var delegate: RPCDelegate?
 
-  public init(delegate: RPCDelegate? = nil) {
+  public init(delegate: RPCDelegate? = nil, maxFrameSize: Int = RPC.defaultMaxFrameSize) {
+    precondition(maxFrameSize > 0, "maxFrameSize must be positive")
     self.delegate = delegate
+    self.maxFrameSize = maxFrameSize
   }
 
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
+    if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
@@ -39,11 +48,13 @@ public class RPC {
   }
 
   public func event(_ command: UInt, data: Data? = nil) {
+    guard !failed else { return }
     let frame = Messages.encodeEvent(command: command, data: data)
     delegate?.rpc(self, send: frame)
   }
 
-  public func createRequestStream(command: UInt) -> OutgoingStream {
+  public func createRequestStream(command: UInt) throws -> OutgoingStream {
+    if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
     let stream = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
@@ -56,6 +67,7 @@ public class RPC {
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {
+    if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
@@ -66,12 +78,18 @@ public class RPC {
   }
 
   public func receive(_ data: Data) {
+    guard !failed else { return }
     buffer.append(data)
     var frames: [Data] = []
+    var oversizeFrame: (size: Int, limit: Int)?
     while buffer.count >= 4 {
       var peekState = State(Data(buffer.prefix(4)))
       let bodyLen = Int(try! Primitive.UInt32().decode(&peekState))
       let frameLen = 4 + bodyLen
+      if frameLen > maxFrameSize {
+        oversizeFrame = (frameLen, maxFrameSize)
+        break
+      }
       guard buffer.count >= frameLen else { break }
       frames.append(Data(buffer.prefix(frameLen)))
       buffer.removeFirst(frameLen)
@@ -79,10 +97,31 @@ public class RPC {
     for frame in frames {
       dispatchFrame(frame)
     }
+    if let oversizeFrame {
+      fail(RPCLocalError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
+    }
   }
 
   func sendData(_ data: Data) {
     delegate?.rpc(self, send: data)
+  }
+
+  private func fail(_ error: Error) {
+    guard !failed else { return }
+    failed = true
+    failureError = error
+    buffer.removeAll()
+    let drainedPending = pending
+    pending.removeAll()
+    let drainedStreams = pendingResponseStreams
+    pendingResponseStreams.removeAll()
+    for (_, continuation) in drainedPending {
+      continuation.resume(throwing: error)
+    }
+    for (_, continuation) in drainedStreams {
+      continuation.resume(throwing: error)
+    }
+    delegate?.rpc(self, didFailWith: error)
   }
 
   func registerOutgoingStream(_ stream: OutgoingStream, forId id: UInt) {
@@ -188,7 +227,7 @@ public class RPC {
     do {
       message = try Messages.decodeFrame(frame)
     } catch {
-      delegate?.rpc(self, didFailWith: error)
+      fail(error)
       return
     }
 

@@ -2,7 +2,7 @@
   "name": "bare-rpc-swift-fixtures",
   "private": true,
   "dependencies": {
-    "bare-rpc": "1.2.0",
+    "bare-rpc": "1.3.0",
     "bare-stdio": "^1.0.0",
     "bare-stream": "^2.13.0"
   }

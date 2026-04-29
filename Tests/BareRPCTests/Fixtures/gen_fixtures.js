@@ -8,24 +8,7 @@
 // can be verified byte-for-byte against JS.
 
 const { header } = require('bare-rpc/messages')
-
-// Mirrored from bare-rpc/lib/constants.js. Inlined because `lib/constants`
-// isn't in bare-rpc's exports map; pulling it via a relative path coupled
-// us to bare-rpc's internal layout. package.json pins bare-rpc exactly so
-// this stays in sync.
-const t = { REQUEST: 1, RESPONSE: 2, STREAM: 3 }
-const s = {
-  OPEN: 0x1,
-  CLOSE: 0x2,
-  PAUSE: 0x4,
-  RESUME: 0x8,
-  DATA: 0x10,
-  END: 0x20,
-  DESTROY: 0x40,
-  ERROR: 0x80,
-  REQUEST: 0x100,
-  RESPONSE: 0x200
-}
+const { type: t, stream: s } = require('bare-rpc/constants')
 
 function enc(m, body) {
   const state = { start: 0, end: 0, buffer: null }

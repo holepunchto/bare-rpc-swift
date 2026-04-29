@@ -1,4 +1,4 @@
 .build/
 Package.resolved
-Tests/BareRPCTests/Fixtures/node_modules/
-Tests/BareRPCTests/Fixtures/package-lock.json
+node_modules/
+package-lock.json

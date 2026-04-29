@@ -15,8 +15,8 @@ import Testing
 /// fixtures alone — it depends on both sides agreeing on ordering and timing.
 ///
 /// These tests require:
-///   - a `bare` binary on PATH (`npm install -g bare`)
-///   - `npm install` to have been run in `Tests/BareRPCTests/Fixtures/`
+///   - a `bare` binary on PATH (`npm install -g bare-runtime`)
+///   - `npm install` to have been run at the repo root
 ///
 /// If either prerequisite is missing the tests early-return with a printed
 /// notice locally, but record a hard failure when `CI=true` is set so a
@@ -168,18 +168,23 @@ final class BarePeer {
     let fixturesDir = thisFile.deletingLastPathComponent()
       .appendingPathComponent("Fixtures")
     let scriptURL = fixturesDir.appendingPathComponent("rpc_peer.js")
-    let nodeModules = fixturesDir.appendingPathComponent("node_modules")
+    let repoRoot =
+      thisFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let nodeModules = repoRoot.appendingPathComponent("node_modules")
 
     guard fm.fileExists(atPath: scriptURL.path) else {
       report("rpc_peer.js not found at \(scriptURL.path)")
       return nil
     }
     guard fm.fileExists(atPath: nodeModules.path) else {
-      report("run `npm install` in \(fixturesDir.path) first")
+      report("run `npm install` at \(repoRoot.path) first")
       return nil
     }
     guard let barePath = which("bare") else {
-      report("`bare` not found on PATH (`npm install -g bare`)")
+      report("`bare` not found on PATH (`npm install -g bare-runtime`)")
       return nil
     }
 

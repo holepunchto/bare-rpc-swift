@@ -260,12 +260,7 @@ final class RPCPair {
     let server = RPC(delegate: captureDelegate, maxFrameSize: 100)
 
     // Forge a 4-byte header claiming a 200-byte body — exceeds the 100-byte cap.
-    var header = Data(count: 4)
-    let len: UInt32 = 200
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 200)
     server.receive(header)
 
     guard let err = captured as? RPCLocalError, case .frameTooLarge(let size, let limit) = err
@@ -285,12 +280,7 @@ final class RPCPair {
     // Let the request register its continuation before we poison the connection.
     try await Task.sleep(nanoseconds: 100_000_000)
 
-    var header = Data(count: 4)
-    let len: UInt32 = 200
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 200)
     rpc.receive(header)
 
     do {
@@ -306,6 +296,42 @@ final class RPCPair {
     }
   }
 
+  @Test func frameAtExactlyMaxFrameSizeIsAccepted() async throws {
+    let frame = Messages.encodeEvent(command: 1, data: Data([1, 2, 3]))
+
+    let captureDelegate = CaptureDelegate()
+    var errors: [Error] = []
+    var dispatched = false
+    captureDelegate.onError = { errors.append($0) }
+    captureDelegate.onEvent = { _ in dispatched = true }
+
+    let server = RPC(delegate: captureDelegate, maxFrameSize: frame.count)
+    server.receive(frame)
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    #expect(errors.isEmpty)
+    #expect(dispatched)
+  }
+
+  @Test func validFramesAheadOfOversizedFrameStillDispatch() async throws {
+    let captureDelegate = CaptureDelegate()
+    var dispatchedCommand: UInt?
+    var captured: Error?
+    captureDelegate.onEvent = { dispatchedCommand = $0.command }
+    captureDelegate.onError = { captured = $0 }
+
+    let server = RPC(delegate: captureDelegate, maxFrameSize: 100)
+    let valid = Messages.encodeEvent(command: 7, data: Data([1, 2, 3]))
+    server.receive(valid + makeRawHeader(claimingBodyLen: 200))
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    #expect(dispatchedCommand == 7)
+    guard let err = captured as? RPCLocalError, case .frameTooLarge = err else {
+      Issue.record("Expected frameTooLarge, got: \(String(describing: captured))")
+      return
+    }
+  }
+
   @Test func receiveAfterFailIsNoop() async throws {
     let captureDelegate = CaptureDelegate()
     var errorCount = 0
@@ -313,12 +339,7 @@ final class RPCPair {
 
     let server = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
-    var header = Data(count: 4)
-    let len: UInt32 = 100
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 100)
     server.receive(header)
     #expect(errorCount == 1)
 
@@ -331,12 +352,7 @@ final class RPCPair {
     let captureDelegate = CaptureDelegate()
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
-    var header = Data(count: 4)
-    let len: UInt32 = 100
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 100)
     rpc.receive(header)
 
     do {
@@ -354,12 +370,7 @@ final class RPCPair {
     let captureDelegate = CaptureDelegate()
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
-    var header = Data(count: 4)
-    let len: UInt32 = 100
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 100)
     rpc.receive(header)
 
     do {
@@ -377,12 +388,7 @@ final class RPCPair {
     let captureDelegate = CaptureDelegate()
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
-    var header = Data(count: 4)
-    let len: UInt32 = 100
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 100)
     rpc.receive(header)
 
     do {
@@ -403,12 +409,7 @@ final class RPCPair {
 
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
-    var header = Data(count: 4)
-    let len: UInt32 = 100
-    header[0] = UInt8(len & 0xFF)
-    header[1] = UInt8((len >> 8) & 0xFF)
-    header[2] = UInt8((len >> 16) & 0xFF)
-    header[3] = UInt8((len >> 24) & 0xFF)
+    let header = makeRawHeader(claimingBodyLen: 100)
     rpc.receive(header)
 
     rpc.event(7, data: Data([0xBE, 0xEF]))

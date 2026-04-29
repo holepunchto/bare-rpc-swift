@@ -155,12 +155,16 @@ import Testing
 }
 
 func makeRawFrame(_ body: Data) -> Data {
-  let len = UInt32(body.count)
-  var frame = Data(count: 4)
-  frame[0] = UInt8(len & 0xFF)
-  frame[1] = UInt8((len >> 8) & 0xFF)
-  frame[2] = UInt8((len >> 16) & 0xFF)
-  frame[3] = UInt8((len >> 24) & 0xFF)
+  var frame = makeRawHeader(claimingBodyLen: UInt32(body.count))
   frame.append(body)
   return frame
+}
+
+func makeRawHeader(claimingBodyLen len: UInt32) -> Data {
+  var header = Data(count: 4)
+  header[0] = UInt8(len & 0xFF)
+  header[1] = UInt8((len >> 8) & 0xFF)
+  header[2] = UInt8((len >> 16) & 0xFF)
+  header[3] = UInt8((len >> 24) & 0xFF)
+  return header
 }

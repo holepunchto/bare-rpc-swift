@@ -15,6 +15,8 @@ extension RPCDelegate {
 }
 
 public class RPC {
+  public static let defaultMaxFrameSize = 16 * 1024 * 1024
+
   public let maxFrameSize: Int
 
   private var buffer = Data()
@@ -28,7 +30,8 @@ public class RPC {
 
   public weak var delegate: RPCDelegate?
 
-  public init(delegate: RPCDelegate? = nil, maxFrameSize: Int = 16 * 1024 * 1024) {
+  public init(delegate: RPCDelegate? = nil, maxFrameSize: Int = RPC.defaultMaxFrameSize) {
+    precondition(maxFrameSize > 0, "maxFrameSize must be positive")
     self.delegate = delegate
     self.maxFrameSize = maxFrameSize
   }
@@ -78,13 +81,13 @@ public class RPC {
     guard !failed else { return }
     buffer.append(data)
     var frames: [Data] = []
-    var oversize: (size: Int, limit: Int)?
+    var oversizeFrame: (size: Int, limit: Int)?
     while buffer.count >= 4 {
       var peekState = State(Data(buffer.prefix(4)))
       let bodyLen = Int(try! Primitive.UInt32().decode(&peekState))
       let frameLen = 4 + bodyLen
       if frameLen > maxFrameSize {
-        oversize = (frameLen, maxFrameSize)
+        oversizeFrame = (frameLen, maxFrameSize)
         break
       }
       guard buffer.count >= frameLen else { break }
@@ -94,8 +97,8 @@ public class RPC {
     for frame in frames {
       dispatchFrame(frame)
     }
-    if let oversize {
-      fail(RPCLocalError.frameTooLarge(size: oversize.size, limit: oversize.limit))
+    if let oversizeFrame {
+      fail(RPCLocalError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
     }
   }
 

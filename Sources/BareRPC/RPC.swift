@@ -218,7 +218,7 @@ public class RPC {
     do {
       message = try Messages.decodeFrame(frame)
     } catch {
-      delegate?.rpc(self, didFailWith: error)
+      fail(error)
       return
     }
 

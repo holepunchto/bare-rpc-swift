@@ -224,6 +224,34 @@ final class RPCPair {
     }
   }
 
+  @Test func malformedFramePoisonsConnection() async throws {
+    let captureDelegate = CaptureDelegate()
+    let rpc = RPC(delegate: captureDelegate)
+
+    async let response: Data? = rpc.request(1, data: nil)
+    // Let the request register its continuation before we feed the bad frame.
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    var body = Data()
+    body.append(1)  // type = 1 (request)
+    body.append(0xFE)  // truncated varint — decode will throw
+    rpc.receive(makeRawFrame(body))
+
+    do {
+      _ = try await response
+      Issue.record("Expected pending request to throw after malformed frame")
+    } catch {
+      // Any error from the decode failure is acceptable.
+    }
+
+    do {
+      _ = try await rpc.request(2, data: nil)
+      Issue.record("Expected post-fail request to throw")
+    } catch {
+      // Any error is acceptable; the gating throws the stored failure error.
+    }
+  }
+
   @Test func oversizedFrameTriggersFailWithLocalError() async throws {
     let captureDelegate = CaptureDelegate()
     var captured: Error?

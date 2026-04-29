@@ -1,0 +1,7 @@
+{
+  "name": "bare-rpc-swift",
+  "private": true,
+  "workspaces": [
+    "Tests/BareRPCTests/Fixtures"
+  ]
+}

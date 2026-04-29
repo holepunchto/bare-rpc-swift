@@ -166,7 +166,7 @@ final class RPCPair {
         confirm()
       }
 
-      _ = pair.client.createRequestStream(command: 1)
+      _ = try pair.client.createRequestStream(command: 1)
       try await Task.sleep(nanoseconds: 100_000_000)
     }
   }
@@ -297,6 +297,94 @@ final class RPCPair {
     // Subsequent receive must be ignored — even a well-formed frame.
     server.receive(makeRawFrame(Data([1, 1, 0, 0])))
     #expect(errorCount == 1)
+  }
+
+  @Test func requestAfterFailThrowsFailureError() async throws {
+    let captureDelegate = CaptureDelegate()
+    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+
+    var header = Data(count: 4)
+    let len: UInt32 = 100
+    header[0] = UInt8(len & 0xFF)
+    header[1] = UInt8((len >> 8) & 0xFF)
+    header[2] = UInt8((len >> 16) & 0xFF)
+    header[3] = UInt8((len >> 24) & 0xFF)
+    rpc.receive(header)
+
+    do {
+      _ = try await rpc.request(1, data: nil)
+      Issue.record("Expected frameTooLarge")
+    } catch let err as RPCLocalError {
+      guard case .frameTooLarge = err else {
+        Issue.record("Expected frameTooLarge, got \(err)")
+        return
+      }
+    }
+  }
+
+  @Test func requestWithResponseStreamAfterFailThrowsFailureError() async throws {
+    let captureDelegate = CaptureDelegate()
+    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+
+    var header = Data(count: 4)
+    let len: UInt32 = 100
+    header[0] = UInt8(len & 0xFF)
+    header[1] = UInt8((len >> 8) & 0xFF)
+    header[2] = UInt8((len >> 16) & 0xFF)
+    header[3] = UInt8((len >> 24) & 0xFF)
+    rpc.receive(header)
+
+    do {
+      _ = try await rpc.requestWithResponseStream(command: 1)
+      Issue.record("Expected frameTooLarge")
+    } catch let err as RPCLocalError {
+      guard case .frameTooLarge = err else {
+        Issue.record("Expected frameTooLarge, got \(err)")
+        return
+      }
+    }
+  }
+
+  @Test func createRequestStreamAfterFailThrowsFailureError() async throws {
+    let captureDelegate = CaptureDelegate()
+    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+
+    var header = Data(count: 4)
+    let len: UInt32 = 100
+    header[0] = UInt8(len & 0xFF)
+    header[1] = UInt8((len >> 8) & 0xFF)
+    header[2] = UInt8((len >> 16) & 0xFF)
+    header[3] = UInt8((len >> 24) & 0xFF)
+    rpc.receive(header)
+
+    do {
+      _ = try rpc.createRequestStream(command: 1)
+      Issue.record("Expected frameTooLarge")
+    } catch let err as RPCLocalError {
+      guard case .frameTooLarge = err else {
+        Issue.record("Expected frameTooLarge, got \(err)")
+        return
+      }
+    }
+  }
+
+  @Test func eventAfterFailIsSilentlyDropped() async throws {
+    let captureDelegate = CaptureDelegate()
+    var sendCount = 0
+    captureDelegate.onSend = { _ in sendCount += 1 }
+
+    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+
+    var header = Data(count: 4)
+    let len: UInt32 = 100
+    header[0] = UInt8(len & 0xFF)
+    header[1] = UInt8((len >> 8) & 0xFF)
+    header[2] = UInt8((len >> 16) & 0xFF)
+    header[3] = UInt8((len >> 24) & 0xFF)
+    rpc.receive(header)
+
+    rpc.event(7, data: Data([0xBE, 0xEF]))
+    #expect(sendCount == 0)
   }
 
   @Test func errorErrnoRoundtrip() async throws {

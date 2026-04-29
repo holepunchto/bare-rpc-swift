@@ -24,6 +24,7 @@ public class RPC {
   private var incomingStreams: [UInt: IncomingStream] = [:]
   private var outgoingStreams: [UInt: OutgoingStream] = [:]
   private var failed = false
+  private var failureError: Error?
 
   public weak var delegate: RPCDelegate?
 
@@ -33,6 +34,7 @@ public class RPC {
   }
 
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
+    if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
@@ -43,11 +45,13 @@ public class RPC {
   }
 
   public func event(_ command: UInt, data: Data? = nil) {
+    guard !failed else { return }
     let frame = Messages.encodeEvent(command: command, data: data)
     delegate?.rpc(self, send: frame)
   }
 
-  public func createRequestStream(command: UInt) -> OutgoingStream {
+  public func createRequestStream(command: UInt) throws -> OutgoingStream {
+    if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
     let stream = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
@@ -60,6 +64,7 @@ public class RPC {
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {
+    if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
@@ -101,6 +106,7 @@ public class RPC {
   private func fail(_ error: Error) {
     guard !failed else { return }
     failed = true
+    failureError = error
     buffer.removeAll()
     let drainedPending = pending
     pending.removeAll()

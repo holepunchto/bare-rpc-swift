@@ -44,7 +44,7 @@ private func waitUntil(
         confirm()
       }
 
-      let stream = pair.client.createRequestStream(command: 42)
+      let stream = try pair.client.createRequestStream(command: 42)
       stream.write(Data([1, 2, 3]))
       stream.write(Data([4, 5, 6]))
       stream.end()
@@ -71,7 +71,7 @@ private func waitUntil(
         confirm()
       }
 
-      let stream = pair.client.createRequestStream(command: 1)
+      let stream = try pair.client.createRequestStream(command: 1)
       stream.write(Data([0xFF]))
       stream.end()
 
@@ -98,7 +98,7 @@ private func waitUntil(
         }
       }
 
-      let stream = pair.client.createRequestStream(command: 1)
+      let stream = try pair.client.createRequestStream(command: 1)
       stream.destroy(error: RPCRemoteError(message: "aborted", code: "ABORT"))
 
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -202,7 +202,7 @@ private func waitUntil(
         confirm()
       }
 
-      let stream = pair.client.createRequestStream(command: 1)
+      let stream = try pair.client.createRequestStream(command: 1)
       stream.end()
       try await Task.sleep(nanoseconds: 100_000_000)
     }
@@ -244,7 +244,7 @@ private func waitUntil(
         confirm()
       }
 
-      let stream = pair.client.createRequestStream(command: 1)
+      let stream = try pair.client.createRequestStream(command: 1)
       stream.write(Data([1]))
       stream.destroy()
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -312,8 +312,8 @@ private func waitUntil(
         confirm()
       }
 
-      let stream1 = pair.client.createRequestStream(command: 10)
-      let stream2 = pair.client.createRequestStream(command: 20)
+      let stream1 = try pair.client.createRequestStream(command: 10)
+      let stream2 = try pair.client.createRequestStream(command: 20)
       stream1.write(Data([10]))
       stream2.write(Data([20]))
       stream1.end()

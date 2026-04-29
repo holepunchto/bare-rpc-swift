@@ -37,7 +37,7 @@ private func waitUntil(
         #expect(req.command == 42)
 
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         #expect(chunks == [Data([1, 2, 3]), Data([4, 5, 6])])
@@ -45,8 +45,8 @@ private func waitUntil(
       }
 
       let stream = pair.client.createRequestStream(command: 42)
-      stream.write(Data([1, 2, 3]))
-      stream.write(Data([4, 5, 6]))
+      await stream.write(Data([1, 2, 3]))
+      await stream.write(Data([4, 5, 6]))
       stream.end()
 
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -64,7 +64,7 @@ private func waitUntil(
         }
 
         var count = 0
-        for try await _ in incoming.stream {
+        for try await _ in incoming {
           count += 1
         }
         #expect(count == 1)
@@ -72,7 +72,7 @@ private func waitUntil(
       }
 
       let stream = pair.client.createRequestStream(command: 1)
-      stream.write(Data([0xFF]))
+      await stream.write(Data([0xFF]))
       stream.end()
 
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -90,7 +90,7 @@ private func waitUntil(
         }
 
         do {
-          for try await _ in incoming.stream {}
+          for try await _ in incoming {}
           Issue.record("Expected error")
         } catch let err as RPCRemoteError {
           #expect(err.message == "aborted")
@@ -112,15 +112,15 @@ private func waitUntil(
 
     pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
-      stream.write(Data([10, 20]))
-      stream.write(Data([30, 40]))
+      await stream.write(Data([10, 20]))
+      await stream.write(Data([30, 40]))
       stream.end()
     }
 
     let incoming = try await pair.client.requestWithResponseStream(command: 42)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([10, 20]), Data([30, 40])])
@@ -137,7 +137,7 @@ private func waitUntil(
     let incoming = try await pair.client.requestWithResponseStream(command: 1)
 
     do {
-      for try await _ in incoming.stream {}
+      for try await _ in incoming {}
       Issue.record("Expected error")
     } catch let err as RPCRemoteError {
       #expect(err.message == "failed")
@@ -159,7 +159,7 @@ private func waitUntil(
       command: 42, data: Data("foo".utf8))
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks.isEmpty)
@@ -195,7 +195,7 @@ private func waitUntil(
           return
         }
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         #expect(chunks.isEmpty)
@@ -219,7 +219,7 @@ private func waitUntil(
     let incoming = try await pair.client.requestWithResponseStream(command: 1)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks.isEmpty)
@@ -237,7 +237,7 @@ private func waitUntil(
           return
         }
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         #expect(chunks == [Data([1])])
@@ -245,7 +245,7 @@ private func waitUntil(
       }
 
       let stream = pair.client.createRequestStream(command: 1)
-      stream.write(Data([1]))
+      await stream.write(Data([1]))
       stream.destroy()
       try await Task.sleep(nanoseconds: 100_000_000)
     }
@@ -256,14 +256,14 @@ private func waitUntil(
 
     pair.serverDelegate.onRequest = { req in
       let stream = req.createResponseStream()!
-      stream.write(Data([1]))
+      await stream.write(Data([1]))
       stream.destroy()
     }
 
     let incoming = try await pair.client.requestWithResponseStream(command: 1)
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -277,7 +277,7 @@ private func waitUntil(
     pair.serverDelegate.onRequest = { req in
       #expect(req.data == Data([0xAB]))
       let stream = req.createResponseStream()!
-      stream.write(Data([0xCD]))
+      await stream.write(Data([0xCD]))
       stream.end()
     }
 
@@ -285,7 +285,7 @@ private func waitUntil(
       command: 1, data: Data([0xAB]))
 
     var chunks: [Data] = []
-    for try await chunk in incoming.stream {
+    for try await chunk in incoming {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([0xCD])])
@@ -303,7 +303,7 @@ private func waitUntil(
           return
         }
         var chunks: [Data] = []
-        for try await chunk in incoming.stream {
+        for try await chunk in incoming {
           chunks.append(chunk)
         }
         // Each stream sends one chunk matching its command
@@ -314,8 +314,8 @@ private func waitUntil(
 
       let stream1 = pair.client.createRequestStream(command: 10)
       let stream2 = pair.client.createRequestStream(command: 20)
-      stream1.write(Data([10]))
-      stream2.write(Data([20]))
+      await stream1.write(Data([10]))
+      await stream2.write(Data([20]))
       stream1.end()
       stream2.end()
 
@@ -350,5 +350,52 @@ private func waitUntil(
     } catch let err as RPCRemoteError {
       #expect(err.code == "ERR_UNEXPECTED_STREAM")
     }
+  }
+
+  // MARK: - Backpressure
+
+  @Test func corkOnlyAtHighWaterMark() async throws {
+    let pair = RPCPair()
+    pair.serverDelegate.onRequest = { _ in }
+
+    let outgoing = pair.client.createRequestStream(command: 1)
+
+    // Default highWaterMark is 16; 15 writes stay under the threshold.
+    for i in 0..<15 {
+      await outgoing.write(Data([UInt8(i)]))
+    }
+    #expect(!outgoing.corked)
+
+    // The 16th push hits the watermark and the peer sends PAUSE.
+    await outgoing.write(Data([15]))
+    let paused = try await waitUntil { outgoing.corked }
+    #expect(paused)
+  }
+
+  @Test func pauseAndResumeRoundTrip() async throws {
+    let pair = RPCPair()
+    let serverStream = StreamHolder<IncomingStream>()
+
+    pair.serverDelegate.onRequest = { req in
+      serverStream.value = req.requestStream
+    }
+
+    let outgoing = pair.client.createRequestStream(command: 1)
+    // Default highWaterMark is 16; fill exactly to trigger PAUSE.
+    for i in 0..<16 {
+      await outgoing.write(Data([UInt8(i)]))
+    }
+
+    let paused = try await waitUntil { outgoing.corked && serverStream.value != nil }
+    #expect(paused)
+
+    // Drain 12 chunks → buffer hits lowWaterMark (4) → RESUME.
+    var iter = serverStream.value!.makeAsyncIterator()
+    for _ in 0..<12 {
+      _ = try await iter.next()
+    }
+
+    let resumed = try await waitUntil { !outgoing.corked }
+    #expect(resumed)
   }
 }

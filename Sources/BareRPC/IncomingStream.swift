@@ -1,31 +1,51 @@
 import Foundation
 
-public class IncomingStream {
+public class IncomingStream: AsyncSequence {
+  public typealias Element = Data
+
   public let requestId: UInt
   public let mask: UInt
-  public let stream: AsyncThrowingStream<Data, Error>
-  private let continuation: AsyncThrowingStream<Data, Error>.Continuation
-  private weak var rpc: RPC?
+  public let highWaterMark: Int
+  public let lowWaterMark: Int
   public private(set) var finished = false
 
-  init(requestId: UInt, mask: UInt, rpc: RPC) {
+  private weak var rpc: RPC?
+  private var buffer: [Data] = []
+  private var pendingError: Error?
+  private var paused = false
+  private var waiter: CheckedContinuation<Data?, Error>?
+  private var iteratorMade = false
+
+  init(requestId: UInt, mask: UInt, rpc: RPC, highWaterMark: Int = 16, lowWaterMark: Int = 4) {
+    precondition(highWaterMark > 0 && lowWaterMark >= 0 && lowWaterMark < highWaterMark)
     self.requestId = requestId
     self.mask = mask
     self.rpc = rpc
-    var cont: AsyncThrowingStream<Data, Error>.Continuation!
-    self.stream = AsyncThrowingStream<Data, Error> { cont = $0 }
-    self.continuation = cont
+    self.highWaterMark = highWaterMark
+    self.lowWaterMark = lowWaterMark
   }
 
   func push(_ data: Data) {
     guard !finished else { return }
-    continuation.yield(data)
+    if let waiter {
+      self.waiter = nil
+      waiter.resume(returning: data)
+      return
+    }
+    buffer.append(data)
+    if buffer.count >= highWaterMark && !paused {
+      paused = true
+      rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.pause))
+    }
   }
 
   func end() {
     guard !finished else { return }
     finished = true
-    continuation.finish()
+    if let waiter {
+      self.waiter = nil
+      waiter.resume(returning: nil)
+    }
     rpc?.removeIncomingStream(forId: requestId)
   }
 
@@ -37,11 +57,54 @@ public class IncomingStream {
       rpc?.sendData(
         Messages.encodeStream(
           id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error))
-      continuation.finish(throwing: error)
+      if let waiter {
+        self.waiter = nil
+        waiter.resume(throwing: error)
+      } else {
+        pendingError = error
+      }
     } else {
       rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
-      continuation.finish()
+      if let waiter {
+        self.waiter = nil
+        waiter.resume(returning: nil)
+      }
     }
     rpc?.removeIncomingStream(forId: requestId)
+  }
+
+  public func makeAsyncIterator() -> AsyncIterator {
+    precondition(!iteratorMade, "IncomingStream is single-pass; iterate at most once")
+    iteratorMade = true
+    return AsyncIterator(stream: self)
+  }
+
+  public struct AsyncIterator: AsyncIteratorProtocol {
+    let stream: IncomingStream
+
+    public func next() async throws -> Data? {
+      try await stream.nextChunk()
+    }
+  }
+
+  fileprivate func nextChunk() async throws -> Data? {
+    if !buffer.isEmpty {
+      let data = buffer.removeFirst()
+      if buffer.count <= lowWaterMark && paused {
+        paused = false
+        rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
+      }
+      return data
+    }
+    if let error = pendingError {
+      pendingError = nil
+      throw error
+    }
+    if finished {
+      return nil
+    }
+    return try await withCheckedThrowingContinuation { cont in
+      self.waiter = cont
+    }
   }
 }

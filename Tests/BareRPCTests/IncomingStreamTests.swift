@@ -25,7 +25,7 @@ import Testing
     f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1, 2, 3])])
@@ -39,7 +39,7 @@ import Testing
     f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1]), Data([2]), Data([3])])
@@ -50,7 +50,7 @@ import Testing
     f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks.isEmpty)
@@ -62,7 +62,7 @@ import Testing
     f.stream.destroy()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -75,7 +75,7 @@ import Testing
 
     var chunks: [Data] = []
     do {
-      for try await chunk in f.stream.stream {
+      for try await chunk in f.stream {
         chunks.append(chunk)
       }
       Issue.record("Expected error to be thrown")
@@ -94,7 +94,7 @@ import Testing
     f.stream.push(Data([2]))
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -107,7 +107,7 @@ import Testing
     f.stream.push(Data([2]))
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -120,7 +120,7 @@ import Testing
     f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -133,7 +133,7 @@ import Testing
     f.stream.destroy()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -146,7 +146,7 @@ import Testing
     f.stream.end()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -159,7 +159,7 @@ import Testing
     f.stream.destroy()
 
     var chunks: [Data] = []
-    for try await chunk in f.stream.stream {
+    for try await chunk in f.stream {
       chunks.append(chunk)
     }
     #expect(chunks == [Data([1])])
@@ -170,7 +170,7 @@ import Testing
     f.stream.destroy(error: RPCRemoteError(message: "fail", code: "ERR"))
 
     do {
-      for try await _ in f.stream.stream {
+      for try await _ in f.stream {
         Issue.record("Expected no data")
       }
       Issue.record("Expected error to be thrown")

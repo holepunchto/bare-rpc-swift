@@ -33,20 +33,21 @@ const fixtures = {
     )
   ),
   request_empty_data: hex(
-    enc(
-      { type: t.REQUEST, id: 2, command: 7, stream: 0, data: Buffer.alloc(0) },
-      Buffer.alloc(0)
-    )
+    enc({ type: t.REQUEST, id: 2, command: 7, stream: 0, data: Buffer.alloc(0) }, Buffer.alloc(0))
   ),
   event_with_data: hex(
     enc(
-      { type: t.REQUEST, id: 0, command: 99, stream: 0, data: Buffer.from([0xde, 0xad, 0xbe, 0xef]) },
+      {
+        type: t.REQUEST,
+        id: 0,
+        command: 99,
+        stream: 0,
+        data: Buffer.from([0xde, 0xad, 0xbe, 0xef])
+      },
       Buffer.from([0xde, 0xad, 0xbe, 0xef])
     )
   ),
-  request_stream_open: hex(
-    enc({ type: t.REQUEST, id: 3, command: 5, stream: s.OPEN, data: null })
-  ),
+  request_stream_open: hex(enc({ type: t.REQUEST, id: 3, command: 5, stream: s.OPEN, data: null })),
   response_success: hex(
     enc(
       { type: t.RESPONSE, id: 1, stream: 0, error: null, data: Buffer.from('world') },

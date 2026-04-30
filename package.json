@@ -3,5 +3,13 @@
   "private": true,
   "workspaces": [
     "Tests/BareRPCTests/Fixtures"
-  ]
+  ],
+  "scripts": {
+    "format": "prettier --write .",
+    "lint": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "prettier-config-holepunch": "^2.0.0"
+  }
 }

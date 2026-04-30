@@ -141,13 +141,26 @@ final class BarePeer {
   private let process: Process
   private let stdinPipe: Pipe
   private let stdoutPipe: Pipe
+  private let stdoutContinuation: AsyncStream<Data>.Continuation
 
   private init(process: Process, stdinPipe: Pipe, stdoutPipe: Pipe) {
     self.process = process
     self.stdinPipe = stdinPipe
     self.stdoutPipe = stdoutPipe
     self.delegate = BarePeerDelegate(writeHandle: stdinPipe.fileHandleForWriting)
-    self.rpc = RPC(delegate: delegate)
+    let rpc = RPC(delegate: self.delegate)
+    self.rpc = rpc
+    // Pipe stdout chunks through a single AsyncStream consumed by one
+    // MainActor task. Spawning a fresh Task per readability callback gives
+    // no FIFO guarantee across MainActor — CI caught this when chunks
+    // arrived as [1, 3, 2] bytes instead of [1, 2, 3].
+    let (byteStream, byteCont) = AsyncStream<Data>.makeStream()
+    self.stdoutContinuation = byteCont
+    Task { @MainActor in
+      for await data in byteStream {
+        rpc.receive(data)
+      }
+    }
   }
 
   /// Returns nil when prerequisites are missing. On CI (`CI=true`) a missing
@@ -201,14 +214,14 @@ final class BarePeer {
 
     let peer = BarePeer(process: process, stdinPipe: stdinPipe, stdoutPipe: stdoutPipe)
 
-    // Read from the peer on a background thread, but hop onto MainActor to
-    // call into RPC so all state mutation is serialized.
-    stdoutPipe.fileHandleForReading.readabilityHandler = { [weak peer] handle in
+    // The handler runs on a background I/O thread; yielding into the
+    // continuation is synchronous and thread-safe, and BarePeer's consumer
+    // task delivers the chunks to RPC.receive in order on MainActor.
+    let cont = peer.stdoutContinuation
+    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       if data.isEmpty { return }
-      Task { @MainActor [weak peer] in
-        peer?.rpc.receive(data)
-      }
+      cont.yield(data)
     }
 
     // Drain stderr to avoid blocking the child on a full pipe, and surface
@@ -228,6 +241,7 @@ final class BarePeer {
 
   func stop() {
     stdoutPipe.fileHandleForReading.readabilityHandler = nil
+    stdoutContinuation.finish()
     try? stdinPipe.fileHandleForWriting.close()
     // rpc_peer.js exits on stdin EOF, so waitUntilExit returns promptly. If
     // the peer ever hangs, the suite-wide `.timeLimit` fails the test

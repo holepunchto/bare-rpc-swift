@@ -174,6 +174,9 @@ final class BarePeer {
     process.standardError = stderrPipe
 
     let peer = BarePeer(process: process, stdinPipe: stdinPipe, stdoutPipe: stdoutPipe)
+    peer.delegate.onError = { error in
+      Issue.record("unexpected RPC failure: \(error)")
+    }
 
     let cont = peer.stdoutContinuation
     stdoutPipe.fileHandleForReading.readabilityHandler = { handle in

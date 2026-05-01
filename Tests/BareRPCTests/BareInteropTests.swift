@@ -24,7 +24,7 @@ import Testing
       continuation.yield(event)
     }
 
-    let stream = peer.rpc.createRequestStream(command: Command.requestStreamCollector)
+    let stream = try peer.rpc.createRequestStream(command: Command.requestStreamCollector)
     await stream.write(Data("foo".utf8))
     await stream.write(Data("bar".utf8))
     await stream.write(Data("baz".utf8))
@@ -43,7 +43,7 @@ import Testing
     let (events, continuation) = AsyncStream<IncomingEvent>.makeStream()
     peer.delegate.onEvent = { event in continuation.yield(event) }
 
-    let outgoing = peer.rpc.createRequestStream(command: Command.requestStreamCollector)
+    let outgoing = try peer.rpc.createRequestStream(command: Command.requestStreamCollector)
     await outgoing.write(Data("foo".utf8))
     await outgoing.write(Data("bar".utf8))
     await outgoing.write(Data("baz".utf8))

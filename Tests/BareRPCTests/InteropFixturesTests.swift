@@ -3,13 +3,9 @@ import Testing
 
 @testable import BareRPC
 
-/// Byte-level interop tests against the JavaScript `bare-rpc` reference.
-///
-/// Each fixture is the hex-encoded output of the JS `header` codec for a known
-/// message shape. See `Fixtures/gen_fixtures.js` to regenerate the hex strings.
-/// Every test verifies both directions:
-///   1. decode: Swift parses the JS-produced bytes into the expected message
-///   2. encode: Swift produces byte-identical output for the same message
+/// Byte-level interop against the JS `bare-rpc` reference. Fixtures are
+/// hex-encoded frames produced by `Fixtures/gen_fixtures.js`; each test
+/// checks Swift decodes them and re-encodes byte-identically.
 @Suite struct InteropFixturesTests {
 
   // MARK: - Request frames
@@ -40,7 +36,7 @@ import Testing
     }
     #expect(req.id == 2)
     #expect(req.command == 7)
-    // Swift currently flattens empty data to nil on decode (documented divergence).
+    // Swift flattens empty data to nil on decode (documented divergence).
     #expect(req.data == nil)
   }
 
@@ -60,8 +56,6 @@ import Testing
   }
 
   @Test func eventEmptyData() throws {
-    // Same id=0 path as eventWithData but with no payload — distinct from
-    // requestEmptyData because it goes through encodeEvent, not encodeRequest.
     let fixture = hex("050000000100630000")
     let frame = Messages.encodeEvent(command: 99, data: Data())
     #expect(frame == fixture)
@@ -76,7 +70,7 @@ import Testing
   }
 
   @Test func requestLargeCommand() throws {
-    // command=300 crosses the 1-byte → 3-byte c.uint boundary (0xfd + uint16 LE).
+    // 3-byte c.uint (0xfd + uint16 LE).
     let fixture = hex("090000000101fd2c0100026869")
     let frame = Messages.encodeRequest(id: 1, command: 300, data: Data("hi".utf8))
     #expect(frame == fixture)
@@ -105,7 +99,7 @@ import Testing
   }
 
   @Test func requestLargeIdVarint() throws {
-    // id=1000 triggers the 3-byte c.uint encoding (0xfd + uint16 LE).
+    // 3-byte c.uint (0xfd + uint16 LE).
     let fixture = hex("0700000001fde803010000")
     let frame = Messages.encodeRequest(id: 1000, command: 1, data: Data())
     #expect(frame == fixture)
@@ -118,7 +112,7 @@ import Testing
   }
 
   @Test func requestMax32IdVarint() throws {
-    // id=0xFFFFFFFE triggers the 5-byte c.uint encoding (0xfe + uint32 LE).
+    // 5-byte c.uint (0xfe + uint32 LE).
     let fixture = hex("0c00000001fefeffffff020003010203")
     let frame = Messages.encodeRequest(
       id: 0xFFFF_FFFE, command: 2, data: Data([1, 2, 3]))
@@ -134,7 +128,7 @@ import Testing
   }
 
   @Test func requestId2Pow32Varint() throws {
-    // id=2^32 crosses the c.uint boundary into the 9-byte form (0xff + uint64 LE).
+    // 9-byte c.uint (0xff + uint64 LE).
     let fixture = hex("1000000001ff0000000001000000020003010203")
     let frame = Messages.encodeRequest(
       id: 0x1_0000_0000, command: 2, data: Data([1, 2, 3]))
@@ -152,9 +146,6 @@ import Testing
   // MARK: - Response frames
 
   @Test func responseEmptyData() throws {
-    // Symmetric to requestEmptyData on the response side. Empty success body
-    // serializes as `data_length=0` then nothing — Swift flattens to nil on
-    // decode (documented divergence).
     let fixture = hex("050000000202000000")
     let frame = Messages.encodeResponse(id: 2, data: Data())
     #expect(frame == fixture)
@@ -224,8 +215,7 @@ import Testing
   }
 
   @Test func responseErrorPositiveErrno() throws {
-    // Positive errno (42) — `c.int` zigzag-encodes as 84 (0x54), not 0x2a.
-    // Catches sign-extension bugs that would silently flip the value.
+    // 42 zigzag-encodes as 0x54, not 0x2a.
     let fixture = hex("1000000002010100046f6f707305454f4f505354")
     let frame = Messages.encodeErrorResponse(
       id: 1, message: "oops", code: "EOOPS", errno: 42)
@@ -241,7 +231,7 @@ import Testing
   }
 
   @Test func responseErrorNegativeMaxErrno() throws {
-    // INT32_MIN — pins the lower bound of the c.int zigzag range.
+    // INT32_MIN — c.int zigzag lower bound.
     let fixture = hex("140000000201010004626f6f6d0545424f4f4dfeffffffff")
     let frame = Messages.encodeErrorResponse(
       id: 1, message: "boom", code: "EBOOM", errno: -2_147_483_648)
@@ -257,9 +247,7 @@ import Testing
   }
 
   @Test func responseErrorLongMessage() throws {
-    // 300-char message crosses the c.utf8 length-prefix boundary into the
-    // 3-byte form (0xfd + uint16 LE). Catches a varint length-prefix bug on
-    // the string side that the short-message fixtures don't exercise.
+    // 3-byte c.utf8 length prefix (0xfd + uint16 LE).
     let longMessage = String(repeating: "a", count: 300)
     let fixture = hex(
       "3601000002010100fd2c01"
@@ -299,8 +287,6 @@ import Testing
   // MARK: - Stream frames
 
   @Test func streamOpenRequestDirectionAck() throws {
-    // The `STREAM | REQUEST | OPEN` ack — the second leg of the request-stream
-    // handshake (the first leg is requestStreamOpenOmitsData, a type=1 frame).
     let fixture = hex("050000000303fd0101")
     let frame = Messages.encodeStream(
       id: 3, flags: StreamFlag.request | StreamFlag.open)
@@ -315,8 +301,6 @@ import Testing
   }
 
   @Test func streamOpenResponseDirection() throws {
-    // The `STREAM | RESPONSE | OPEN` ack — the second leg of the
-    // response-stream handshake.
     let fixture = hex("050000000304fd0102")
     let frame = Messages.encodeStream(
       id: 4, flags: StreamFlag.response | StreamFlag.open)

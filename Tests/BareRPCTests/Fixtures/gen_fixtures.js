@@ -1,11 +1,5 @@
-// Generates wire-format fixtures from the JS bare-rpc reference implementation.
-// Run from this directory after `npm install`:
-//
-//     bare gen_fixtures.js
-//
-// The output is a JSON object mapping fixture name to hex-encoded frame bytes.
-// These fixtures are mirrored in InteropFixturesTests.swift so the Swift port
-// can be verified byte-for-byte against JS.
+// Regenerates the hex fixtures used by InteropFixturesTests.swift.
+// Run as: bare gen_fixtures.js
 
 const { header } = require('bare-rpc/messages')
 const { type: t, stream: s } = require('bare-rpc/constants')

@@ -12,6 +12,6 @@ public struct RPCRemoteError: Error {
   }
 }
 
-public enum RPCLocalError: Error {
+public enum RPCError: Error {
   case frameTooLarge(size: Int, limit: Int)
 }

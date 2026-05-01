@@ -252,7 +252,7 @@ final class RPCPair {
     }
   }
 
-  @Test func oversizedFrameTriggersFailWithLocalError() async throws {
+  @Test func oversizedFrameTriggersFailWithRPCError() async throws {
     let captureDelegate = CaptureDelegate()
     var captured: Error?
     captureDelegate.onError = { captured = $0 }
@@ -263,7 +263,7 @@ final class RPCPair {
     let header = makeRawHeader(claimingBodyLen: 200)
     server.receive(header)
 
-    guard let err = captured as? RPCLocalError, case .frameTooLarge(let size, let limit) = err
+    guard let err = captured as? RPCError, case .frameTooLarge(let size, let limit) = err
     else {
       Issue.record("Expected frameTooLarge, got: \(String(describing: captured))")
       return
@@ -286,7 +286,7 @@ final class RPCPair {
     do {
       _ = try await response
       Issue.record("Expected frameTooLarge")
-    } catch let err as RPCLocalError {
+    } catch let err as RPCError {
       guard case .frameTooLarge(let size, let limit) = err else {
         Issue.record("Expected frameTooLarge, got \(err)")
         return
@@ -326,7 +326,7 @@ final class RPCPair {
     try await Task.sleep(nanoseconds: 100_000_000)
 
     #expect(dispatchedCommand == 7)
-    guard let err = captured as? RPCLocalError, case .frameTooLarge = err else {
+    guard let err = captured as? RPCError, case .frameTooLarge = err else {
       Issue.record("Expected frameTooLarge, got: \(String(describing: captured))")
       return
     }
@@ -358,7 +358,7 @@ final class RPCPair {
     do {
       _ = try await rpc.request(1, data: nil)
       Issue.record("Expected frameTooLarge")
-    } catch let err as RPCLocalError {
+    } catch let err as RPCError {
       guard case .frameTooLarge = err else {
         Issue.record("Expected frameTooLarge, got \(err)")
         return
@@ -376,7 +376,7 @@ final class RPCPair {
     do {
       _ = try await rpc.requestWithResponseStream(command: 1)
       Issue.record("Expected frameTooLarge")
-    } catch let err as RPCLocalError {
+    } catch let err as RPCError {
       guard case .frameTooLarge = err else {
         Issue.record("Expected frameTooLarge, got \(err)")
         return
@@ -394,7 +394,7 @@ final class RPCPair {
     do {
       _ = try rpc.createRequestStream(command: 1)
       Issue.record("Expected frameTooLarge")
-    } catch let err as RPCLocalError {
+    } catch let err as RPCError {
       guard case .frameTooLarge = err else {
         Issue.record("Expected frameTooLarge, got \(err)")
         return

@@ -25,8 +25,9 @@ public class RPC {
   private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
   private var incomingStreams: [UInt: IncomingStream] = [:]
   private var outgoingStreams: [UInt: OutgoingStream] = [:]
-  private var failed = false
   private var failureError: Error?
+
+  private var failed: Bool { failureError != nil }
 
   public weak var delegate: RPCDelegate?
 
@@ -98,7 +99,7 @@ public class RPC {
       dispatchFrame(frame)
     }
     if let oversizeFrame {
-      fail(RPCLocalError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
+      fail(RPCError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
     }
   }
 
@@ -108,7 +109,6 @@ public class RPC {
 
   private func fail(_ error: Error) {
     guard !failed else { return }
-    failed = true
     failureError = error
     buffer.removeAll()
     let drainedPending = pending

@@ -1,6 +1,9 @@
 {
   "name": "bare-rpc-swift",
   "private": true,
+  "workspaces": [
+    "Tests/BareRPCTests/Fixtures"
+  ],
   "scripts": {
     "format": "prettier --write .",
     "lint": "prettier --check ."

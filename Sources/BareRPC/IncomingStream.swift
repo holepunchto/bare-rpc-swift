@@ -83,11 +83,22 @@ public class IncomingStream: AsyncSequence {
     let stream: IncomingStream
 
     public func next() async throws -> Data? {
-      try await stream.nextChunk()
+      try await stream.nextChunk(isolation: nil)
+    }
+
+    // Preserves the caller's actor across the await so producer (push)
+    // and consumer (nextChunk) share an executor — required for safe
+    // single-isolation use without locks.
+    public func next(isolation actor: isolated (any Actor)? = #isolation)
+      async throws -> Data?
+    {
+      try await stream.nextChunk(isolation: actor)
     }
   }
 
-  fileprivate func nextChunk() async throws -> Data? {
+  fileprivate func nextChunk(isolation actor: isolated (any Actor)? = #isolation)
+    async throws -> Data?
+  {
     if !buffer.isEmpty {
       let data = buffer.removeFirst()
       if buffer.count <= lowWaterMark && paused {

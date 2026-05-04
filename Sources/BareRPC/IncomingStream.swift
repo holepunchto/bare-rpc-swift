@@ -91,6 +91,7 @@ public actor IncomingStream: AsyncSequence {
   }
 
   fileprivate func nextChunk() async throws -> Data? {
+    precondition(waiter == nil, "IncomingStream does not support concurrent iteration")
     if !buffer.isEmpty {
       let data = buffer.removeFirst()
       if buffer.count <= lowWaterMark && paused {

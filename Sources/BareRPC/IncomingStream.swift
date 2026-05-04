@@ -1,12 +1,12 @@
 import Foundation
 
-public class IncomingStream: AsyncSequence {
+public actor IncomingStream: AsyncSequence {
   public typealias Element = Data
 
-  public let requestId: UInt
-  public let mask: UInt
-  public let highWaterMark: Int
-  public let lowWaterMark: Int
+  public nonisolated let requestId: UInt
+  public nonisolated let mask: UInt
+  public nonisolated let highWaterMark: Int
+  public nonisolated let lowWaterMark: Int
   public private(set) var finished = false
 
   private weak var rpc: RPC?
@@ -14,7 +14,6 @@ public class IncomingStream: AsyncSequence {
   private var pendingError: Error?
   private var paused = false
   private var waiter: CheckedContinuation<Data?, Error>?
-  private var iteratorMade = false
 
   init(requestId: UInt, mask: UInt, rpc: RPC, highWaterMark: Int = 16, lowWaterMark: Int = 4) {
     precondition(highWaterMark > 0 && lowWaterMark >= 0 && lowWaterMark < highWaterMark)
@@ -73,9 +72,7 @@ public class IncomingStream: AsyncSequence {
     rpc?.removeIncomingStream(forId: requestId)
   }
 
-  public func makeAsyncIterator() -> AsyncIterator {
-    precondition(!iteratorMade, "IncomingStream is single-pass; iterate at most once")
-    iteratorMade = true
+  public nonisolated func makeAsyncIterator() -> AsyncIterator {
     return AsyncIterator(stream: self)
   }
 
@@ -83,22 +80,17 @@ public class IncomingStream: AsyncSequence {
     let stream: IncomingStream
 
     public func next() async throws -> Data? {
-      try await stream.nextChunk(isolation: nil)
+      try await stream.nextChunk()
     }
 
-    // Preserves the caller's actor across the await so producer (push)
-    // and consumer (nextChunk) share an executor — required for safe
-    // single-isolation use without locks.
     public func next(isolation actor: isolated (any Actor)? = #isolation)
       async throws -> Data?
     {
-      try await stream.nextChunk(isolation: actor)
+      try await stream.nextChunk()
     }
   }
 
-  fileprivate func nextChunk(isolation actor: isolated (any Actor)? = #isolation)
-    async throws -> Data?
-  {
+  fileprivate func nextChunk() async throws -> Data? {
     if !buffer.isEmpty {
       let data = buffer.removeFirst()
       if buffer.count <= lowWaterMark && paused {

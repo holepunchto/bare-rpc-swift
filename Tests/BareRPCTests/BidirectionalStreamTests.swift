@@ -104,22 +104,22 @@ import Testing
       return result
     }
 
-    for i in 0..<4 {
+    for i in 0..<16 {
       await outgoing.write(Data([UInt8(i)]))
     }
     outgoing.end()
 
     let received = try await readTask.value
-    #expect(received.count == 4)
+    #expect(received.count == 16)
     #expect(received[0] == Data([0]))
-    #expect(received[3] == Data([3]))
+    #expect(received[15] == Data([15]))
   }
 
   @Test func createBidirectionalStreamAfterFailThrowsFailureError() async throws {
     let captureDelegate = CaptureDelegate()
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
-    rpc.receive(makeRawHeader(claimingBodyLen: 200))
+    await rpc.receive(makeRawHeader(claimingBodyLen: 200))
 
     do {
       _ = try await rpc.createBidirectionalStream(command: 1)

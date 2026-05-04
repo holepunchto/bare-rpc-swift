@@ -93,7 +93,7 @@ public class RPC {
     }
   }
 
-  public func receive(_ data: Data) {
+  public func receive(_ data: Data) async {
     guard !failed else { return }
     buffer.append(data)
     var frames: [Data] = []
@@ -111,7 +111,7 @@ public class RPC {
       buffer.removeFirst(frameLen)
     }
     for frame in frames {
-      dispatchFrame(frame)
+      await dispatchFrame(frame)
     }
     if let oversizeFrame {
       fail(RPCError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
@@ -184,7 +184,7 @@ public class RPC {
     continuation.resume(returning: incoming)
   }
 
-  private func handleStreamMessage(_ msg: StreamMessage) {
+  private func handleStreamMessage(_ msg: StreamMessage) async {
     if msg.flags & StreamFlag.open != 0 {
       // OPEN ack from remote — currently no action needed
       return
@@ -193,11 +193,11 @@ public class RPC {
     if msg.flags & StreamFlag.close != 0 {
       if msg.flags & StreamFlag.error != 0 {
         if let incoming = incomingStreams.removeValue(forKey: msg.id) {
-          incoming.destroy(error: msg.error)
+          await incoming.destroy(error: msg.error)
         }
       } else {
         if let incoming = incomingStreams.removeValue(forKey: msg.id) {
-          incoming.end()
+          await incoming.end()
         }
       }
       return
@@ -215,13 +215,15 @@ public class RPC {
 
     if msg.flags & StreamFlag.data != 0 {
       if let incoming = incomingStreams[msg.id], let data = msg.data {
-        incoming.push(data)
+        await incoming.push(data)
       }
       return
     }
 
     if msg.flags & StreamFlag.end != 0 {
-      incomingStreams[msg.id]?.end()
+      if let incoming = incomingStreams[msg.id] {
+        await incoming.end()
+      }
       return
     }
 
@@ -237,7 +239,7 @@ public class RPC {
     }
   }
 
-  private func dispatchFrame(_ frame: Data) {
+  private func dispatchFrame(_ frame: Data) async {
     let message: DecodedMessage?
     do {
       message = try Messages.decodeFrame(frame)
@@ -266,7 +268,7 @@ public class RPC {
         }
       }
     case .stream(let s):
-      handleStreamMessage(s)
+      await handleStreamMessage(s)
     case .response(let resp):
       if resp.stream == StreamFlag.open {
         handleResponseStreamOpen(resp)

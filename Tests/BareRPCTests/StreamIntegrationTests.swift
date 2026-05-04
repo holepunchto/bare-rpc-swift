@@ -177,7 +177,7 @@ private func waitUntil(
 
     let incoming = try await pair.client.requestWithResponseStream(
       command: 42, data: Data("foo".utf8))
-    incoming.destroy()
+    await incoming.destroy()
 
     let observed = try await waitUntil { serverStream.value?.ended == true }
     #expect(observed)

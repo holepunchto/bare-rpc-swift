@@ -120,7 +120,7 @@ final class BarePeer {
     self.stdoutContinuation = byteCont
     Task { @MainActor in
       for await data in byteStream {
-        rpc.receive(data)
+        await rpc.receive(data)
       }
     }
   }

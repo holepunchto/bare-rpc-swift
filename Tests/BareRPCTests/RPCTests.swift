@@ -302,6 +302,29 @@ final class RPCPair {
     }
   }
 
+  @Test func failDrainsPendingResponseStream() async throws {
+    let captureDelegate = CaptureDelegate()
+    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 100)
+
+    async let stream: IncomingStream = rpc.requestWithResponseStream(command: 1)
+    // Let the continuation register before we poison the connection.
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    await rpc.receive(makeRawHeader(claimingBodyLen: 200))
+
+    do {
+      _ = try await stream
+      Issue.record("Expected frameTooLarge")
+    } catch let err as RPCError {
+      guard case .frameTooLarge(let size, let limit) = err else {
+        Issue.record("Expected frameTooLarge, got \(err)")
+        return
+      }
+      #expect(size == 204)
+      #expect(limit == 100)
+    }
+  }
+
   @Test func frameAtExactlyMaxFrameSizeIsAccepted() async throws {
     let frame = Messages.encodeEvent(command: 1, data: Data([1, 2, 3]))
 

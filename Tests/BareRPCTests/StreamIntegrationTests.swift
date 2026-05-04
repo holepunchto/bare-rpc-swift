@@ -269,6 +269,19 @@ private func waitUntil(
     #expect(chunks == [Data([1])])
   }
 
+  @Test func serverDestroysRequestStreamWithError() async throws {
+    let pair = RPCPair()
+
+    pair.serverDelegate.onRequest = { req in
+      guard let incoming = req.requestStream else { return }
+      await incoming.destroy(error: RPCRemoteError(message: "rejected", code: "ERR_REJECTED"))
+    }
+
+    let outgoing = try pair.client.createRequestStream(command: 1)
+    let ended = try await waitUntil { outgoing.ended }
+    #expect(ended)
+  }
+
   // MARK: - Request with data alongside response stream
 
   @Test func responseStreamWithRequestData() async throws {

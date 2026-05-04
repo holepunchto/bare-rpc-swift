@@ -185,4 +185,22 @@ import Testing
     #expect(f.stream.mask == StreamFlag.response)
     await f.stream.end()
   }
+
+  @Test func destroyWithoutErrorWhileWaiting() async throws {
+    let f = Fixture()
+    let readTask = Task {
+      var chunks: [Data] = []
+      for try await chunk in f.stream {
+        chunks.append(chunk)
+      }
+      return chunks
+    }
+    // Let the read task enter the wait state (no data in buffer yet).
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    await f.stream.destroy()
+
+    let chunks = try await readTask.value
+    #expect(chunks.isEmpty)
+  }
 }

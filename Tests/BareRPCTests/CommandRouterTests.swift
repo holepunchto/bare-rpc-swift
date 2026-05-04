@@ -143,4 +143,22 @@ import Testing
       #expect(err.code == "ERR_UNKNOWN_COMMAND")
     }
   }
+
+  @Test func unknownEventWithDefaultDelegateIsNoop() async throws {
+    // Delegate set but doesn't override didReceiveUnknownEvent — protocol
+    // extension default is a silent no-op.
+    final class EmptyDelegate: CommandRouterDelegate {}
+
+    let pair = RPCPair()
+    let router = CommandRouter(delegate: EmptyDelegate())
+
+    try await confirmation { confirm in
+      pair.serverDelegate.onEvent = { event in
+        await router.dispatch(event)
+        confirm()
+      }
+      pair.client.event(99, data: nil)
+      try await Task.sleep(nanoseconds: 50_000_000)
+    }
+  }
 }

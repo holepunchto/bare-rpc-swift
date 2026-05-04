@@ -142,4 +142,28 @@ import Testing
     #expect(f.sent.count == countAfterEnd)
   }
 
+  @Test func writeWhileCorkSuspendsUntilUncork() async throws {
+    let f = Fixture()
+    f.stream.cork()
+
+    var writeCompleted = false
+    let writeTask = Task {
+      await f.stream.write(Data([0xAB]))
+      writeCompleted = true
+    }
+
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(!writeCompleted)
+    #expect(f.sent.isEmpty)
+
+    f.stream.uncork()
+    await writeTask.value
+
+    #expect(writeCompleted)
+    #expect(f.sent.count == 1)
+    let s = try decodeStream(f.sent[0])
+    #expect(s.flags == StreamFlag.request | StreamFlag.data)
+    #expect(s.data == Data([0xAB]))
+  }
+
 }

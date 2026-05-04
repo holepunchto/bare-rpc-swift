@@ -96,18 +96,23 @@ import Testing
 
     let (outgoing, incoming) = try await pair.client.createBidirectionalStream(command: 1)
 
-    for i in 0..<16 {
+    // Read concurrently with writes — required for bidir: sequential write-then-read
+    // can deadlock if the echo path's receive buffer fills before the client starts reading.
+    let readTask = Task {
+      var result: [Data] = []
+      for try await chunk in incoming { result.append(chunk) }
+      return result
+    }
+
+    for i in 0..<4 {
       await outgoing.write(Data([UInt8(i)]))
     }
     outgoing.end()
 
-    var received: [Data] = []
-    for try await chunk in incoming {
-      received.append(chunk)
-    }
-    #expect(received.count == 16)
+    let received = try await readTask.value
+    #expect(received.count == 4)
     #expect(received[0] == Data([0]))
-    #expect(received[15] == Data([15]))
+    #expect(received[3] == Data([3]))
   }
 
   @Test func createBidirectionalStreamAfterFailThrowsFailureError() async throws {

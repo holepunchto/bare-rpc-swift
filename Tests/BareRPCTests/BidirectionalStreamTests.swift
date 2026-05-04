@@ -13,21 +13,21 @@ import Testing
         Issue.record("Expected request stream")
         return
       }
-      guard let responseStream = req.createResponseStream() else {
+      guard let responseStream = await req.createResponseStream() else {
         Issue.record("Expected to create response stream")
         return
       }
       for try await chunk in requestStream {
         await responseStream.write(chunk)
       }
-      responseStream.end()
+      await responseStream.end()
     }
 
     let (outgoing, incoming) = try await pair.client.createBidirectionalStream(command: 42)
 
     await outgoing.write(Data([1, 2, 3]))
     await outgoing.write(Data([4, 5, 6]))
-    outgoing.end()
+    await outgoing.end()
 
     var received: [Data] = []
     for try await chunk in incoming {
@@ -40,8 +40,9 @@ import Testing
     let pair = RPCPair()
 
     pair.serverDelegate.onRequest = { req in
-      guard let responseStream = req.createResponseStream() else { return }
-      responseStream.destroy(error: RPCRemoteError(message: "server error", code: "ERR_SERVER"))
+      guard let responseStream = await req.createResponseStream() else { return }
+      await responseStream.destroy(
+        error: RPCRemoteError(message: "server error", code: "ERR_SERVER"))
     }
 
     let (_, incoming) = try await pair.client.createBidirectionalStream(command: 1)
@@ -64,7 +65,7 @@ import Testing
           Issue.record("Expected request stream")
           return
         }
-        _ = req.createResponseStream()
+        _ = await req.createResponseStream()
         var chunks: [Data] = []
         for try await chunk in requestStream {
           chunks.append(chunk)
@@ -75,7 +76,7 @@ import Testing
 
       let (outgoing, _) = try await pair.client.createBidirectionalStream(command: 1)
       await outgoing.write(Data([0xAB]))
-      outgoing.destroy()
+      await outgoing.destroy()
 
       try await Task.sleep(nanoseconds: 100_000_000)
     }
@@ -86,12 +87,12 @@ import Testing
 
     pair.serverDelegate.onRequest = { req in
       guard let requestStream = req.requestStream,
-        let responseStream = req.createResponseStream()
+        let responseStream = await req.createResponseStream()
       else { return }
       for try await chunk in requestStream {
         await responseStream.write(chunk)
       }
-      responseStream.end()
+      await responseStream.end()
     }
 
     let (outgoing, incoming) = try await pair.client.createBidirectionalStream(command: 1)
@@ -107,7 +108,7 @@ import Testing
     for i in 0..<16 {
       await outgoing.write(Data([UInt8(i)]))
     }
-    outgoing.end()
+    await outgoing.end()
 
     let received = try await readTask.value
     #expect(received.count == 16)

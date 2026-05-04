@@ -14,7 +14,7 @@ extension RPCDelegate {
   public func rpc(_ rpc: RPC, didFailWith error: Error) {}
 }
 
-public class RPC {
+public actor RPC {
   public static let defaultMaxFrameSize = 16 * 1024 * 1024
 
   public let maxFrameSize: Int
@@ -162,8 +162,8 @@ public class RPC {
     let incomingRequest = IncomingRequest(
       id: req.id, command: req.command, data: req.data, rpc: self,
       requestStream: incoming)
-    Task { [weak self] in
-      guard let self, let delegate = self.delegate else { return }
+    Task {
+      guard let delegate = self.delegate else { return }
       try? await delegate.rpc(self, didReceiveRequest: incomingRequest)
     }
   }
@@ -204,12 +204,12 @@ public class RPC {
     }
 
     if msg.flags & StreamFlag.pause != 0 {
-      outgoingStreams[msg.id]?.cork()
+      await outgoingStreams[msg.id]?.cork()
       return
     }
 
     if msg.flags & StreamFlag.resume != 0 {
-      outgoingStreams[msg.id]?.uncork()
+      await outgoingStreams[msg.id]?.uncork()
       return
     }
 
@@ -230,9 +230,9 @@ public class RPC {
     if msg.flags & StreamFlag.destroy != 0 {
       if let outgoing = outgoingStreams[msg.id] {
         if msg.flags & StreamFlag.error != 0 {
-          outgoing.destroy(error: msg.error)
+          await outgoing.destroy(error: msg.error)
         } else {
-          outgoing.destroy()
+          await outgoing.destroy()
         }
       }
       return
@@ -255,8 +255,8 @@ public class RPC {
       if req.stream == StreamFlag.open {
         handleRequestStreamOpen(req)
       } else {
-        Task { [weak self] in
-          guard let self, let delegate = self.delegate else { return }
+        Task {
+          guard let delegate = self.delegate else { return }
           if req.id == 0 {
             let event = IncomingEvent(command: req.command, data: req.data)
             await delegate.rpc(self, didReceiveEvent: event)

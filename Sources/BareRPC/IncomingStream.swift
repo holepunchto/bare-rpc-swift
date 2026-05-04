@@ -24,7 +24,7 @@ public actor IncomingStream: AsyncSequence {
     self.lowWaterMark = lowWaterMark
   }
 
-  func push(_ data: Data) {
+  func push(_ data: Data) async {
     guard !finished else { return }
     if let waiter {
       self.waiter = nil
@@ -34,26 +34,26 @@ public actor IncomingStream: AsyncSequence {
     buffer.append(data)
     if buffer.count >= highWaterMark && !paused {
       paused = true
-      rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.pause))
+      await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.pause))
     }
   }
 
-  func end() {
+  func end() async {
     guard !finished else { return }
     finished = true
     if let waiter {
       self.waiter = nil
       waiter.resume(returning: nil)
     }
-    rpc?.removeIncomingStream(forId: requestId)
+    await rpc?.removeIncomingStream(forId: requestId)
   }
 
   // Also emits DESTROY when called by the dispatcher on a remote CLOSE+ERROR (JS parity).
-  public func destroy(error: RPCRemoteError? = nil) {
+  public func destroy(error: RPCRemoteError? = nil) async {
     guard !finished else { return }
     finished = true
     if let error {
-      rpc?.sendData(
+      await rpc?.sendData(
         Messages.encodeStream(
           id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error))
       if let waiter {
@@ -63,13 +63,13 @@ public actor IncomingStream: AsyncSequence {
         pendingError = error
       }
     } else {
-      rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
+      await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
       if let waiter {
         self.waiter = nil
         waiter.resume(returning: nil)
       }
     }
-    rpc?.removeIncomingStream(forId: requestId)
+    await rpc?.removeIncomingStream(forId: requestId)
   }
 
   public nonisolated func makeAsyncIterator() -> AsyncIterator {
@@ -96,7 +96,7 @@ public actor IncomingStream: AsyncSequence {
       let data = buffer.removeFirst()
       if buffer.count <= lowWaterMark && paused {
         paused = false
-        rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
+        await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
       }
       return data
     }

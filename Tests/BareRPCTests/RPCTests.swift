@@ -69,7 +69,7 @@ final class RPCPair {
 
   @Test func requestResponse() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reply(req.data) }
+    pair.serverDelegate.onRequest = { req in await req.reply(req.data) }
 
     let payload = Data([1, 2, 3])
     let response = try await pair.client.request(42, data: payload)
@@ -78,14 +78,14 @@ final class RPCPair {
 
   @Test func requestWithNilResponse() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reply(nil) }
+    pair.serverDelegate.onRequest = { req in await req.reply(nil) }
     let response = try await pair.client.request(1, data: nil)
     #expect(response == nil)
   }
 
   @Test func requestRejection() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reject("Oops", code: "ERR", errno: -2) }
+    pair.serverDelegate.onRequest = { req in await req.reject("Oops", code: "ERR", errno: -2) }
 
     do {
       _ = try await pair.client.request(1, data: nil)
@@ -110,7 +110,7 @@ final class RPCPair {
         Issue.record("Events should not trigger onRequest")
       }
 
-      pair.client.event(7, data: Data([0xBE, 0xEF]))
+      await pair.client.event(7, data: Data([0xBE, 0xEF]))
       try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
@@ -172,7 +172,7 @@ final class RPCPair {
         confirm()
       }
 
-      _ = try pair.client.createRequestStream(command: 1)
+      _ = try await pair.client.createRequestStream(command: 1)
       try await Task.sleep(nanoseconds: 100_000_000)
     }
   }
@@ -421,7 +421,7 @@ final class RPCPair {
     await rpc.receive(header)
 
     do {
-      _ = try rpc.createRequestStream(command: 1)
+      _ = try await rpc.createRequestStream(command: 1)
       Issue.record("Expected frameTooLarge")
     } catch let err as RPCError {
       guard case .frameTooLarge = err else {
@@ -441,13 +441,13 @@ final class RPCPair {
     let header = makeRawHeader(claimingBodyLen: 100)
     await rpc.receive(header)
 
-    rpc.event(7, data: Data([0xBE, 0xEF]))
+    await rpc.event(7, data: Data([0xBE, 0xEF]))
     #expect(sendCount == 0)
   }
 
   @Test func errorErrnoRoundtrip() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reject("fail", code: "ENOENT", errno: 42) }
+    pair.serverDelegate.onRequest = { req in await req.reject("fail", code: "ENOENT", errno: 42) }
 
     do {
       _ = try await pair.client.request(1, data: nil)

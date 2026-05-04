@@ -65,6 +65,21 @@ public class RPC {
     return stream
   }
 
+  public func createBidirectionalStream(command: UInt) async throws
+    -> (outgoing: OutgoingStream, incoming: IncomingStream)
+  {
+    if let failureError { throw failureError }
+    let id = nextId
+    nextId = (nextId % 0xFFFF_FFFE) + 1
+    let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
+    registerOutgoingStream(outgoing, forId: id)
+    let incoming = try await withCheckedThrowingContinuation { continuation in
+      pendingResponseStreams[id] = continuation
+      sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+    }
+    return (outgoing, incoming)
+  }
+
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {

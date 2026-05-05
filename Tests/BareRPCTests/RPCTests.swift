@@ -8,9 +8,15 @@ class PipeDelegate: RPCDelegate {
   var onRequest: ((IncomingRequest) async throws -> Void)?
   var onEvent: ((IncomingEvent) async -> Void)?
   var onError: ((Error) -> Void)?
+  private var pendingDelivery: Task<Void, Never> = Task {}
 
   public func rpc(_ rpc: RPC, send data: Data) {
-    peer?.receive(data)
+    let peer = self.peer
+    let prev = pendingDelivery
+    pendingDelivery = Task {
+      await prev.value
+      await peer?.receive(data)
+    }
   }
   func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
     try await onRequest?(request)
@@ -63,7 +69,7 @@ final class RPCPair {
 
   @Test func requestResponse() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reply(req.data) }
+    pair.serverDelegate.onRequest = { req in await req.reply(req.data) }
 
     let payload = Data([1, 2, 3])
     let response = try await pair.client.request(42, data: payload)
@@ -72,14 +78,14 @@ final class RPCPair {
 
   @Test func requestWithNilResponse() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reply(nil) }
+    pair.serverDelegate.onRequest = { req in await req.reply(nil) }
     let response = try await pair.client.request(1, data: nil)
     #expect(response == nil)
   }
 
   @Test func requestRejection() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reject("Oops", code: "ERR", errno: -2) }
+    pair.serverDelegate.onRequest = { req in await req.reject("Oops", code: "ERR", errno: -2) }
 
     do {
       _ = try await pair.client.request(1, data: nil)
@@ -104,7 +110,7 @@ final class RPCPair {
         Issue.record("Events should not trigger onRequest")
       }
 
-      pair.client.event(7, data: Data([0xBE, 0xEF]))
+      await pair.client.event(7, data: Data([0xBE, 0xEF]))
       try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
@@ -116,14 +122,14 @@ final class RPCPair {
     let frame = Messages.encodeRequest(id: 1, command: 1, data: payload)
     let mid = frame.count / 2
 
-    pair.server.receive(Data(frame[0..<mid]))
+    await pair.server.receive(Data(frame[0..<mid]))
 
     try await confirmation { confirm in
       pair.serverDelegate.onRequest = { req in
         #expect(req.data == payload)
         confirm()
       }
-      pair.server.receive(Data(frame[mid...]))
+      await pair.server.receive(Data(frame[mid...]))
       try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
@@ -147,7 +153,7 @@ final class RPCPair {
         lock.withLock { commands.append(event.command) }
         confirm()
       }
-      server.receive(combined)
+      await server.receive(combined)
       try await Task.sleep(nanoseconds: 100_000_000)
     }
 
@@ -166,7 +172,7 @@ final class RPCPair {
         confirm()
       }
 
-      _ = try pair.client.createRequestStream(command: 1)
+      _ = try await pair.client.createRequestStream(command: 1)
       try await Task.sleep(nanoseconds: 100_000_000)
     }
   }
@@ -187,7 +193,7 @@ final class RPCPair {
     captureDelegate.onEvent = { _ in
       Issue.record("Streaming events should be silently discarded")
     }
-    server.receive(makeRawFrame(body))
+    await server.receive(makeRawFrame(body))
     try await Task.sleep(nanoseconds: 100_000_000)
 
     lock.withLock { #expect(sentAnything == false) }
@@ -203,7 +209,7 @@ final class RPCPair {
     captureDelegate.onRequest = { _ in
       Issue.record("Should not receive unknown type as request")
     }
-    server.receive(makeRawFrame(Data([99])))
+    await server.receive(makeRawFrame(Data([99])))
     try await Task.sleep(nanoseconds: 100_000_000)
 
     lock.withLock { #expect(sentAnything == false) }
@@ -219,7 +225,7 @@ final class RPCPair {
 
     try await confirmation { confirm in
       captureDelegate.onError = { _ in confirm() }
-      server.receive(makeRawFrame(body))
+      await server.receive(makeRawFrame(body))
       try await Task.sleep(nanoseconds: 100_000_000)
     }
   }
@@ -235,7 +241,7 @@ final class RPCPair {
     var body = Data()
     body.append(1)  // type = 1 (request)
     body.append(0xFE)  // truncated varint — decode will throw
-    rpc.receive(makeRawFrame(body))
+    await rpc.receive(makeRawFrame(body))
 
     do {
       _ = try await response
@@ -261,7 +267,7 @@ final class RPCPair {
 
     // Forge a 4-byte header claiming a 200-byte body — exceeds the 100-byte cap.
     let header = makeRawHeader(claimingBodyLen: 200)
-    server.receive(header)
+    await server.receive(header)
 
     guard let err = captured as? RPCError, case .frameTooLarge(let size, let limit) = err
     else {
@@ -281,10 +287,33 @@ final class RPCPair {
     try await Task.sleep(nanoseconds: 100_000_000)
 
     let header = makeRawHeader(claimingBodyLen: 200)
-    rpc.receive(header)
+    await rpc.receive(header)
 
     do {
       _ = try await response
+      Issue.record("Expected frameTooLarge")
+    } catch let err as RPCError {
+      guard case .frameTooLarge(let size, let limit) = err else {
+        Issue.record("Expected frameTooLarge, got \(err)")
+        return
+      }
+      #expect(size == 204)
+      #expect(limit == 100)
+    }
+  }
+
+  @Test func failDrainsPendingResponseStream() async throws {
+    let captureDelegate = CaptureDelegate()
+    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 100)
+
+    async let stream: IncomingStream = rpc.requestWithResponseStream(command: 1)
+    // Let the continuation register before we poison the connection.
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    await rpc.receive(makeRawHeader(claimingBodyLen: 200))
+
+    do {
+      _ = try await stream
       Issue.record("Expected frameTooLarge")
     } catch let err as RPCError {
       guard case .frameTooLarge(let size, let limit) = err else {
@@ -306,7 +335,7 @@ final class RPCPair {
     captureDelegate.onEvent = { _ in dispatched = true }
 
     let server = RPC(delegate: captureDelegate, maxFrameSize: frame.count)
-    server.receive(frame)
+    await server.receive(frame)
     try await Task.sleep(nanoseconds: 100_000_000)
 
     #expect(errors.isEmpty)
@@ -322,7 +351,7 @@ final class RPCPair {
 
     let server = RPC(delegate: captureDelegate, maxFrameSize: 100)
     let valid = Messages.encodeEvent(command: 7, data: Data([1, 2, 3]))
-    server.receive(valid + makeRawHeader(claimingBodyLen: 200))
+    await server.receive(valid + makeRawHeader(claimingBodyLen: 200))
     try await Task.sleep(nanoseconds: 100_000_000)
 
     #expect(dispatchedCommand == 7)
@@ -340,11 +369,11 @@ final class RPCPair {
     let server = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
-    server.receive(header)
+    await server.receive(header)
     #expect(errorCount == 1)
 
     // Subsequent receive must be ignored — even a well-formed frame.
-    server.receive(makeRawFrame(Data([1, 1, 0, 0])))
+    await server.receive(makeRawFrame(Data([1, 1, 0, 0])))
     #expect(errorCount == 1)
   }
 
@@ -353,7 +382,7 @@ final class RPCPair {
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
-    rpc.receive(header)
+    await rpc.receive(header)
 
     do {
       _ = try await rpc.request(1, data: nil)
@@ -371,7 +400,7 @@ final class RPCPair {
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
-    rpc.receive(header)
+    await rpc.receive(header)
 
     do {
       _ = try await rpc.requestWithResponseStream(command: 1)
@@ -389,10 +418,10 @@ final class RPCPair {
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
-    rpc.receive(header)
+    await rpc.receive(header)
 
     do {
-      _ = try rpc.createRequestStream(command: 1)
+      _ = try await rpc.createRequestStream(command: 1)
       Issue.record("Expected frameTooLarge")
     } catch let err as RPCError {
       guard case .frameTooLarge = err else {
@@ -410,15 +439,15 @@ final class RPCPair {
     let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
-    rpc.receive(header)
+    await rpc.receive(header)
 
-    rpc.event(7, data: Data([0xBE, 0xEF]))
+    await rpc.event(7, data: Data([0xBE, 0xEF]))
     #expect(sendCount == 0)
   }
 
   @Test func errorErrnoRoundtrip() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in req.reject("fail", code: "ENOENT", errno: 42) }
+    pair.serverDelegate.onRequest = { req in await req.reject("fail", code: "ENOENT", errno: 42) }
 
     do {
       _ = try await pair.client.request(1, data: nil)

@@ -14,7 +14,7 @@ extension RPCDelegate {
   public func rpc(_ rpc: RPC, didFailWith error: Error) {}
 }
 
-public class RPC {
+public actor RPC {
   public static let defaultMaxFrameSize = 16 * 1024 * 1024
 
   public let maxFrameSize: Int
@@ -65,6 +65,21 @@ public class RPC {
     return stream
   }
 
+  public func createBidirectionalStream(command: UInt) async throws
+    -> (outgoing: OutgoingStream, incoming: IncomingStream)
+  {
+    if let failureError { throw failureError }
+    let id = nextId
+    nextId = (nextId % 0xFFFF_FFFE) + 1
+    let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
+    registerOutgoingStream(outgoing, forId: id)
+    let incoming = try await withCheckedThrowingContinuation { continuation in
+      pendingResponseStreams[id] = continuation
+      sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+    }
+    return (outgoing, incoming)
+  }
+
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {
@@ -78,7 +93,7 @@ public class RPC {
     }
   }
 
-  public func receive(_ data: Data) {
+  public func receive(_ data: Data) async {
     guard !failed else { return }
     buffer.append(data)
     var frames: [Data] = []
@@ -96,7 +111,7 @@ public class RPC {
       buffer.removeFirst(frameLen)
     }
     for frame in frames {
-      dispatchFrame(frame)
+      await dispatchFrame(frame)
     }
     if let oversizeFrame {
       fail(RPCError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
@@ -147,8 +162,8 @@ public class RPC {
     let incomingRequest = IncomingRequest(
       id: req.id, command: req.command, data: req.data, rpc: self,
       requestStream: incoming)
-    Task { [weak self] in
-      guard let self, let delegate = self.delegate else { return }
+    Task {
+      guard let delegate = self.delegate else { return }
       try? await delegate.rpc(self, didReceiveRequest: incomingRequest)
     }
   }
@@ -169,7 +184,7 @@ public class RPC {
     continuation.resume(returning: incoming)
   }
 
-  private func handleStreamMessage(_ msg: StreamMessage) {
+  private func handleStreamMessage(_ msg: StreamMessage) async {
     if msg.flags & StreamFlag.open != 0 {
       // OPEN ack from remote — currently no action needed
       return
@@ -178,51 +193,53 @@ public class RPC {
     if msg.flags & StreamFlag.close != 0 {
       if msg.flags & StreamFlag.error != 0 {
         if let incoming = incomingStreams.removeValue(forKey: msg.id) {
-          incoming.destroy(error: msg.error)
+          await incoming.destroy(error: msg.error)
         }
       } else {
         if let incoming = incomingStreams.removeValue(forKey: msg.id) {
-          incoming.end()
+          await incoming.end()
         }
       }
       return
     }
 
     if msg.flags & StreamFlag.pause != 0 {
-      outgoingStreams[msg.id]?.cork()
+      await outgoingStreams[msg.id]?.cork()
       return
     }
 
     if msg.flags & StreamFlag.resume != 0 {
-      outgoingStreams[msg.id]?.uncork()
+      await outgoingStreams[msg.id]?.uncork()
       return
     }
 
     if msg.flags & StreamFlag.data != 0 {
       if let incoming = incomingStreams[msg.id], let data = msg.data {
-        incoming.push(data)
+        await incoming.push(data)
       }
       return
     }
 
     if msg.flags & StreamFlag.end != 0 {
-      incomingStreams[msg.id]?.end()
+      if let incoming = incomingStreams[msg.id] {
+        await incoming.end()
+      }
       return
     }
 
     if msg.flags & StreamFlag.destroy != 0 {
       if let outgoing = outgoingStreams[msg.id] {
         if msg.flags & StreamFlag.error != 0 {
-          outgoing.destroy(error: msg.error)
+          await outgoing.destroy(error: msg.error)
         } else {
-          outgoing.destroy()
+          await outgoing.destroy()
         }
       }
       return
     }
   }
 
-  private func dispatchFrame(_ frame: Data) {
+  private func dispatchFrame(_ frame: Data) async {
     let message: DecodedMessage?
     do {
       message = try Messages.decodeFrame(frame)
@@ -238,8 +255,8 @@ public class RPC {
       if req.stream == StreamFlag.open {
         handleRequestStreamOpen(req)
       } else {
-        Task { [weak self] in
-          guard let self, let delegate = self.delegate else { return }
+        Task {
+          guard let delegate = self.delegate else { return }
           if req.id == 0 {
             let event = IncomingEvent(command: req.command, data: req.data)
             await delegate.rpc(self, didReceiveEvent: event)
@@ -251,7 +268,7 @@ public class RPC {
         }
       }
     case .stream(let s):
-      handleStreamMessage(s)
+      await handleStreamMessage(s)
     case .response(let resp):
       if resp.stream == StreamFlag.open {
         handleResponseStreamOpen(resp)

@@ -42,9 +42,9 @@ import Testing
     #expect(s.data == payload)
   }
 
-  @Test func endSendsEndThenClose() throws {
+  @Test func endSendsEndThenClose() async throws {
     let f = Fixture()
-    f.stream.end()
+    await f.stream.end()
     #expect(f.sent.count == 2)
     let first = try decodeStream(f.sent[0])
     #expect(first.flags == StreamFlag.request | StreamFlag.end)
@@ -52,17 +52,17 @@ import Testing
     #expect(second.flags == StreamFlag.request | StreamFlag.close)
   }
 
-  @Test func destroyWithoutErrorSendsClose() throws {
+  @Test func destroyWithoutErrorSendsClose() async throws {
     let f = Fixture()
-    f.stream.destroy()
+    await f.stream.destroy()
     #expect(f.sent.count == 1)
     let s = try decodeStream(f.sent[0])
     #expect(s.flags == StreamFlag.request | StreamFlag.close)
   }
 
-  @Test func destroyWithErrorSendsCloseAndError() throws {
+  @Test func destroyWithErrorSendsCloseAndError() async throws {
     let f = Fixture()
-    f.stream.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
+    await f.stream.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
     #expect(f.sent.count == 1)
     let s = try decodeStream(f.sent[0])
     #expect(s.flags == StreamFlag.request | StreamFlag.close | StreamFlag.error)
@@ -73,33 +73,33 @@ import Testing
 
   @Test func writeAfterEndIsNoop() async throws {
     let f = Fixture()
-    f.stream.end()
+    await f.stream.end()
     let countAfterEnd = f.sent.count
     await f.stream.write(Data([1, 2, 3]))
     #expect(f.sent.count == countAfterEnd)
   }
 
-  @Test func doubleEndIsNoop() throws {
+  @Test func doubleEndIsNoop() async throws {
     let f = Fixture()
-    f.stream.end()
+    await f.stream.end()
     let countAfterEnd = f.sent.count
-    f.stream.end()
+    await f.stream.end()
     #expect(f.sent.count == countAfterEnd)
   }
 
   @Test func writeAfterDestroyIsNoop() async throws {
     let f = Fixture()
-    f.stream.destroy()
+    await f.stream.destroy()
     let countAfterDestroy = f.sent.count
     await f.stream.write(Data([1, 2, 3]))
     #expect(f.sent.count == countAfterDestroy)
   }
 
-  @Test func endAfterDestroyIsNoop() throws {
+  @Test func endAfterDestroyIsNoop() async throws {
     let f = Fixture()
-    f.stream.destroy()
+    await f.stream.destroy()
     let countAfterDestroy = f.sent.count
-    f.stream.end()
+    await f.stream.end()
     #expect(f.sent.count == countAfterDestroy)
   }
 
@@ -108,7 +108,7 @@ import Testing
     await f.stream.write(Data([1]))
     await f.stream.write(Data([2]))
     await f.stream.write(Data([3]))
-    f.stream.end()
+    await f.stream.end()
     // 3 DATA + 1 END + 1 CLOSE = 5 frames
     #expect(f.sent.count == 5)
     let d1 = try decodeStream(f.sent[0])
@@ -125,7 +125,7 @@ import Testing
   @Test func endWithResponseMask() async throws {
     let f = Fixture(mask: StreamFlag.response)
     await f.stream.write(Data([0xAB]))
-    f.stream.end()
+    await f.stream.end()
     let dataMsg = try decodeStream(f.sent[0])
     #expect(dataMsg.flags == StreamFlag.response | StreamFlag.data)
     let endMsg = try decodeStream(f.sent[1])
@@ -134,12 +134,36 @@ import Testing
     #expect(closeMsg.flags == StreamFlag.response | StreamFlag.close)
   }
 
-  @Test func destroyAfterEndIsNoop() throws {
+  @Test func destroyAfterEndIsNoop() async throws {
     let f = Fixture()
-    f.stream.end()
+    await f.stream.end()
     let countAfterEnd = f.sent.count
-    f.stream.destroy()
+    await f.stream.destroy()
     #expect(f.sent.count == countAfterEnd)
+  }
+
+  @Test func writeWhileCorkSuspendsUntilUncork() async throws {
+    let f = Fixture()
+    await f.stream.cork()
+
+    var writeCompleted = false
+    let writeTask = Task {
+      await f.stream.write(Data([0xAB]))
+      writeCompleted = true
+    }
+
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(!writeCompleted)
+    #expect(f.sent.isEmpty)
+
+    await f.stream.uncork()
+    await writeTask.value
+
+    #expect(writeCompleted)
+    #expect(f.sent.count == 1)
+    let s = try decodeStream(f.sent[0])
+    #expect(s.flags == StreamFlag.request | StreamFlag.data)
+    #expect(s.data == Data([0xAB]))
   }
 
 }

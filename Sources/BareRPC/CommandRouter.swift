@@ -18,7 +18,7 @@ extension CommandRouterDelegate {
   public func commandRouter(
     _ router: CommandRouter, didReceiveUnknownRequest request: IncomingRequest
   ) async {
-    request.reject(
+    await request.reject(
       "Unknown command \(request.command)", code: "ERR_UNKNOWN_COMMAND", errno: 0)
   }
 
@@ -55,11 +55,11 @@ public final class CommandRouter {
     }
     do {
       let data = try await handler(request)
-      request.reply(data)
+      await request.reply(data)
     } catch let err as RPCRemoteError {
-      request.reject(err.message, code: err.code, errno: err.errno)
+      await request.reject(err.message, code: err.code, errno: err.errno)
     } catch {
-      request.reject("Internal error", code: "ERROR", errno: 0)
+      await request.reject("Internal error", code: "ERROR", errno: 0)
     }
   }
 
@@ -77,7 +77,7 @@ public final class CommandRouter {
     if let delegate {
       await delegate.commandRouter(self, didReceiveUnknownRequest: request)
     } else {
-      request.reject(
+      await request.reject(
         "Unknown command \(request.command)", code: "ERR_UNKNOWN_COMMAND", errno: 0)
     }
   }

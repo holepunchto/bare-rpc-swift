@@ -21,8 +21,8 @@ import Testing
 
   @Test func pushedDataIsReadable() async throws {
     let f = Fixture()
-    f.stream.push(Data([1, 2, 3]))
-    f.stream.end()
+    await f.stream.push(Data([1, 2, 3]))
+    await f.stream.end()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -33,10 +33,10 @@ import Testing
 
   @Test func multipleChunks() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.push(Data([2]))
-    f.stream.push(Data([3]))
-    f.stream.end()
+    await f.stream.push(Data([1]))
+    await f.stream.push(Data([2]))
+    await f.stream.push(Data([3]))
+    await f.stream.end()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -47,7 +47,7 @@ import Testing
 
   @Test func endFinishesStream() async throws {
     let f = Fixture()
-    f.stream.end()
+    await f.stream.end()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -58,8 +58,8 @@ import Testing
 
   @Test func destroyWithoutErrorFinishesStream() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.destroy()
+    await f.stream.push(Data([1]))
+    await f.stream.destroy()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -70,8 +70,8 @@ import Testing
 
   @Test func destroyWithErrorThrows() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
+    await f.stream.push(Data([1]))
+    await f.stream.destroy(error: RPCRemoteError(message: "broken", code: "ERR", errno: 42))
 
     var chunks: [Data] = []
     do {
@@ -89,9 +89,9 @@ import Testing
 
   @Test func pushAfterEndIsIgnored() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.end()
-    f.stream.push(Data([2]))
+    await f.stream.push(Data([1]))
+    await f.stream.end()
+    await f.stream.push(Data([2]))
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -102,9 +102,9 @@ import Testing
 
   @Test func pushAfterDestroyIsIgnored() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.destroy()
-    f.stream.push(Data([2]))
+    await f.stream.push(Data([1]))
+    await f.stream.destroy()
+    await f.stream.push(Data([2]))
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -115,9 +115,9 @@ import Testing
 
   @Test func doubleEndIsNoop() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.end()
-    f.stream.end()
+    await f.stream.push(Data([1]))
+    await f.stream.end()
+    await f.stream.end()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -128,9 +128,9 @@ import Testing
 
   @Test func destroyAfterEndIsNoop() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.end()
-    f.stream.destroy()
+    await f.stream.push(Data([1]))
+    await f.stream.end()
+    await f.stream.destroy()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -141,9 +141,9 @@ import Testing
 
   @Test func endAfterDestroyIsNoop() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.destroy()
-    f.stream.end()
+    await f.stream.push(Data([1]))
+    await f.stream.destroy()
+    await f.stream.end()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -154,9 +154,9 @@ import Testing
 
   @Test func doubleDestroyIsNoop() async throws {
     let f = Fixture()
-    f.stream.push(Data([1]))
-    f.stream.destroy()
-    f.stream.destroy()
+    await f.stream.push(Data([1]))
+    await f.stream.destroy()
+    await f.stream.destroy()
 
     var chunks: [Data] = []
     for try await chunk in f.stream {
@@ -167,7 +167,7 @@ import Testing
 
   @Test func destroyWithErrorNoDataThrows() async throws {
     let f = Fixture()
-    f.stream.destroy(error: RPCRemoteError(message: "fail", code: "ERR"))
+    await f.stream.destroy(error: RPCRemoteError(message: "fail", code: "ERR"))
 
     do {
       for try await _ in f.stream {
@@ -183,6 +183,24 @@ import Testing
     let f = Fixture(id: 5, mask: StreamFlag.response)
     #expect(f.stream.requestId == 5)
     #expect(f.stream.mask == StreamFlag.response)
-    f.stream.end()
+    await f.stream.end()
+  }
+
+  @Test func destroyWithoutErrorWhileWaiting() async throws {
+    let f = Fixture()
+    let readTask = Task {
+      var chunks: [Data] = []
+      for try await chunk in f.stream {
+        chunks.append(chunk)
+      }
+      return chunks
+    }
+    // Let the read task enter the wait state (no data in buffer yet).
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    await f.stream.destroy()
+
+    let chunks = try await readTask.value
+    #expect(chunks.isEmpty)
   }
 }

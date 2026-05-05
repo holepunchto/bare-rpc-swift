@@ -75,7 +75,7 @@ import Testing
       }
       pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
 
-      pair.client.event(5, data: Data([0xBE]))
+      await pair.client.event(5, data: Data([0xBE]))
       try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
@@ -98,7 +98,7 @@ import Testing
       let router = CommandRouter(delegate: captor)
       pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
 
-      pair.client.event(123, data: nil)
+      await pair.client.event(123, data: nil)
       try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
@@ -108,7 +108,7 @@ import Testing
       func commandRouter(
         _ router: CommandRouter, didReceiveUnknownRequest request: IncomingRequest
       ) async {
-        request.reject("custom miss", code: "ENOENT", errno: 2)
+        await request.reject("custom miss", code: "ENOENT", errno: 2)
       }
     }
 
@@ -141,6 +141,24 @@ import Testing
       Issue.record("Expected rejection")
     } catch let err as RPCRemoteError {
       #expect(err.code == "ERR_UNKNOWN_COMMAND")
+    }
+  }
+
+  @Test func unknownEventWithDefaultDelegateIsNoop() async throws {
+    // Delegate set but doesn't override didReceiveUnknownEvent — protocol
+    // extension default is a silent no-op.
+    final class EmptyDelegate: CommandRouterDelegate {}
+
+    let pair = RPCPair()
+    let router = CommandRouter(delegate: EmptyDelegate())
+
+    try await confirmation { confirm in
+      pair.serverDelegate.onEvent = { event in
+        await router.dispatch(event)
+        confirm()
+      }
+      await pair.client.event(99, data: nil)
+      try await Task.sleep(nanoseconds: 50_000_000)
     }
   }
 }

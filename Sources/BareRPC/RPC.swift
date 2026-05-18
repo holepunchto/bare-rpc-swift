@@ -66,7 +66,9 @@ public actor RPC {
     return stream
   }
 
-  public func streamRequest(command: UInt) throws -> (outgoing: OutgoingStream, response: () async throws -> Data?) {
+  public func streamRequest(command: UInt) throws
+    -> (outgoing: OutgoingStream, response: () async throws -> Data?)
+  {
     if let failureError { throw failureError }
     let id = nextId
     nextId = (nextId % 0xFFFF_FFFE) + 1

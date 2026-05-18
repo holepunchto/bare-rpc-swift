@@ -23,6 +23,7 @@ public actor RPC {
   private var nextId: UInt = 1
   private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
   private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
+  private var pendingStreamResponses: [UInt: AsyncThrowingStream<Data?, Error>.Continuation] = [:]
   private var incomingStreams: [UInt: IncomingStream] = [:]
   private var outgoingStreams: [UInt: OutgoingStream] = [:]
   private var failureError: Error?
@@ -63,6 +64,29 @@ public actor RPC {
     // Send OPEN handshake: type=REQUEST with stream=OPEN
     sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
     return stream
+  }
+
+  public func streamRequest(command: UInt) throws -> (outgoing: OutgoingStream, response: () async throws -> Data?) {
+    if let failureError { throw failureError }
+    let id = nextId
+    nextId = (nextId % 0xFFFF_FFFE) + 1
+    let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
+    registerOutgoingStream(outgoing, forId: id)
+
+    // Store continuation before sending — matches request() convention and is defensive
+    // against synchronous delegates. Acts as a one-shot buffered channel: the response
+    // is captured here and returned when the caller awaits response().
+    var continuation: AsyncThrowingStream<Data?, Error>.Continuation!
+    let channel = AsyncThrowingStream<Data?, Error> { continuation = $0 }
+    pendingStreamResponses[id] = continuation
+
+    sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+
+    let response: () async throws -> Data? = {
+      for try await value in channel { return value }
+      return nil
+    }
+    return (outgoing, response)
   }
 
   public func createBidirectionalStream(command: UInt) async throws
@@ -130,11 +154,16 @@ public actor RPC {
     pending.removeAll()
     let drainedStreams = pendingResponseStreams
     pendingResponseStreams.removeAll()
+    let drainedStreamResponses = pendingStreamResponses
+    pendingStreamResponses.removeAll()
     for (_, continuation) in drainedPending {
       continuation.resume(throwing: error)
     }
     for (_, continuation) in drainedStreams {
       continuation.resume(throwing: error)
+    }
+    for (_, continuation) in drainedStreamResponses {
+      continuation.finish(throwing: error)
     }
     delegate?.rpc(self, didFailWith: error)
   }
@@ -273,6 +302,16 @@ public actor RPC {
       if resp.stream == StreamFlag.open {
         handleResponseStreamOpen(resp)
       } else {
+        if let cont = pendingStreamResponses.removeValue(forKey: resp.id) {
+          switch resp.result {
+          case .success(let data):
+            cont.yield(data)
+            cont.finish()
+          case .remoteError(let msg, let code, let errno):
+            cont.finish(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
+          }
+          return
+        }
         let continuation = pending.removeValue(forKey: resp.id)
         if let continuation {
           switch resp.result {

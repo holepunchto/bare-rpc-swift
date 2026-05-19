@@ -20,7 +20,7 @@ public actor RPC {
   public let maxFrameSize: Int
 
   private var buffer = Data()
-  private var nextId: UInt = 1
+  private var idCounter: UInt = 1
   private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
   private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
   private var pendingStreamResponses: [UInt: AsyncThrowingStream<Data?, Error>.Continuation] = [:]
@@ -30,9 +30,9 @@ public actor RPC {
 
   private var failed: Bool { failureError != nil }
 
-  private var nextRequestId: UInt {
-    let id = nextId
-    nextId = (nextId % 0xFFFF_FFFE) + 1
+  private var nextId: UInt {
+    let id = idCounter
+    idCounter = (idCounter % 0xFFFF_FFFE) + 1
     return id
   }
 
@@ -46,7 +46,7 @@ public actor RPC {
 
   public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
     if let failureError { throw failureError }
-    let id = nextRequestId
+    let id = nextId
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
     return try await withCheckedThrowingContinuation { continuation in
       pending[id] = continuation
@@ -62,7 +62,7 @@ public actor RPC {
 
   public func createRequestStream(command: UInt) throws -> OutgoingStream {
     if let failureError { throw failureError }
-    let id = nextRequestId
+    let id = nextId
     let stream = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(stream, forId: id)
     // Send OPEN handshake: type=REQUEST with stream=OPEN
@@ -74,7 +74,7 @@ public actor RPC {
     -> (outgoing: OutgoingStream, response: () async throws -> Data?)
   {
     if let failureError { throw failureError }
-    let id = nextRequestId
+    let id = nextId
     let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(outgoing, forId: id)
 
@@ -95,7 +95,7 @@ public actor RPC {
     -> (outgoing: OutgoingStream, incoming: IncomingStream)
   {
     if let failureError { throw failureError }
-    let id = nextRequestId
+    let id = nextId
     let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(outgoing, forId: id)
     let incoming = try await withCheckedThrowingContinuation { continuation in
@@ -109,7 +109,7 @@ public actor RPC {
     -> IncomingStream
   {
     if let failureError { throw failureError }
-    let id = nextRequestId
+    let id = nextId
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
     return try await withCheckedThrowingContinuation { continuation in
       pendingResponseStreams[id] = continuation

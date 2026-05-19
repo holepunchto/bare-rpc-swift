@@ -80,10 +80,12 @@ import Testing
       _ = try await response()
       Issue.record("Expected frameTooLarge")
     } catch let err as RPCError {
-      guard case .frameTooLarge = err else {
+      guard case .frameTooLarge(let size, let limit) = err else {
         Issue.record("Expected frameTooLarge, got \(err)")
         return
       }
+      #expect(size == 204)
+      #expect(limit == 100)
     }
   }
 
@@ -98,10 +100,12 @@ import Testing
       _ = try await rpc.streamRequest(command: 1)
       Issue.record("Expected frameTooLarge")
     } catch let err as RPCError {
-      guard case .frameTooLarge = err else {
+      guard case .frameTooLarge(let size, let limit) = err else {
         Issue.record("Expected frameTooLarge, got \(err)")
         return
       }
+      #expect(size == 104)
+      #expect(limit == 50)
     }
   }
 }

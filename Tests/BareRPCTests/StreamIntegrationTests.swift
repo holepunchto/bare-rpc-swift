@@ -350,6 +350,38 @@ private func waitUntil(
     }
   }
 
+  @Test func errorResponseToResponseStreamPropagatesRemoteError() async throws {
+    let pair = RPCPair()
+    pair.serverDelegate.onRequest = { req in
+      await req.reject("boom", code: "ERR_BOOM", errno: -7)
+    }
+
+    do {
+      _ = try await pair.client.requestWithResponseStream(command: 1)
+      Issue.record("Expected error")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "boom")
+      #expect(err.code == "ERR_BOOM")
+      #expect(err.errno == -7)
+    }
+  }
+
+  @Test func errorResponseToBidirectionalStreamPropagatesRemoteError() async throws {
+    let pair = RPCPair()
+    pair.serverDelegate.onRequest = { req in
+      await req.reject("nope", code: "ERR_NOPE", errno: -3)
+    }
+
+    do {
+      _ = try await pair.client.createBidirectionalStream(command: 1)
+      Issue.record("Expected error")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "nope")
+      #expect(err.code == "ERR_NOPE")
+      #expect(err.errno == -3)
+    }
+  }
+
   @Test func streamResponseFailsPendingNormalContinuation() async throws {
     let pair = RPCPair()
     pair.serverDelegate.onRequest = { req in

@@ -312,20 +312,27 @@ public actor RPC {
           }
           return
         }
-        let continuation = pending.removeValue(forKey: resp.id)
-        if let continuation {
+        // Client expected a response stream but got a normal response.
+        // Propagate a remote error verbatim; a plain success means the peer
+        // never opened the stream we asked for.
+        if let streamCont = pendingResponseStreams.removeValue(forKey: resp.id) {
+          switch resp.result {
+          case .remoteError(let msg, let code, let errno):
+            streamCont.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
+          case .success:
+            streamCont.resume(
+              throwing: RPCRemoteError(
+                message: "Expected stream response", code: "ERR_NOT_STREAM"))
+          }
+          return
+        }
+        if let continuation = pending.removeValue(forKey: resp.id) {
           switch resp.result {
           case .success(let data):
             continuation.resume(returning: data)
           case .remoteError(let msg, let code, let errno):
             continuation.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
           }
-        }
-        // If client expected a response stream but got a normal response, fail it
-        if let streamCont = pendingResponseStreams.removeValue(forKey: resp.id) {
-          streamCont.resume(
-            throwing: RPCRemoteError(
-              message: "Expected stream response", code: "ERR_NOT_STREAM"))
         }
       }
     }

@@ -1,5 +1,13 @@
 {
   "name": "bare-rpc-swift",
+  "version": "1.0.0",
+  "description": "Swift implementation of the bare-rpc protocol",
+  "license": "Apache-2.0",
+  "author": "Holepunch",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/holepunchto/bare-rpc-swift.git"
+  },
   "private": true,
   "workspaces": [
     "Tests/BareRPCTests/Fixtures"

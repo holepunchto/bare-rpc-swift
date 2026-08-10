@@ -39,7 +39,9 @@ import Testing
       Issue.record("Expected request")
       return
     }
-    #expect(req.data == nil)
+    // nil and empty encode identically, so a payload-bearing frame always
+    // decodes to a buffer - see Payload handling in hrpc-test's WIRE.md
+    #expect(req.data == Data())
   }
 
   @Test func successResponseRoundtrip() throws {
@@ -69,7 +71,7 @@ import Testing
       Issue.record("Expected success")
       return
     }
-    #expect(data == nil)
+    #expect(data == Data())
   }
 
   @Test func errorResponseRoundtrip() throws {

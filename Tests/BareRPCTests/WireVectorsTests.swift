@@ -185,12 +185,10 @@ enum Vectors {
     return out
   }
 
-  /// This port flattens an empty payload to nil on decode where JS yields an
-  /// empty buffer. The two are the same bytes on the wire - a zero-length
-  /// payload and an absent one encode identically - so they are compared as
-  /// equivalent rather than asserting a representation the port does not use.
+  /// Exact comparison: a payload-bearing frame decodes to a buffer even when it
+  /// is zero length, and a frame with no dataLen on the wire decodes to nil.
   static func expectPayload(_ data: Data?, _ descriptor: [String: Any], _ note: String) {
-    #expect((hex(data) ?? "") == (descriptor["data"] as? String ?? ""), "\(note): data")
+    #expect(hex(data) == descriptor["data"] as? String, "\(note): data")
   }
 
   static func hex(_ data: Data?) -> String? {

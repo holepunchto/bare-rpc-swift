@@ -4,6 +4,8 @@ Entries land under Unreleased and move to a version heading when that version is
 
 ## Unreleased
 
+- A zero-length payload now decodes to an empty `Data` rather than `nil`, matching the wire spec and the JS and Python implementations. This reaches the public API: `request`, a stream reply, and stream chunks hand back an empty buffer where they previously handed back `nil`, including when the peer replied with `nil` - the wire cannot tell an absent payload from an empty one. A frame with no `dataLen` on the wire, such as a bare stream control frame, still decodes to `nil`.
+
 - Fixed `IncomingStream.destroy(error:)` losing the error when a reader raced the frame send. The error is now handed to the consumer before suspending, so the stream throws rather than ending cleanly.
 
 ## 1.0.1

@@ -56,6 +56,34 @@ import Testing
     }
   }
 
+  /// `destroy(error:)` suspends to send the frame. Recording the error after that
+  /// await left a window where a reader saw `finished` with no pending error and
+  /// ended the sequence cleanly, dropping the error - roughly 3% of attempts.
+  @Test func destroyDeliversErrorWhenReaderRacesTheSend() async throws {
+    var completedWithoutError = 0
+
+    for _ in 0..<200 {
+      let pair = RPCPair()
+
+      pair.serverDelegate.onRequest = { req in
+        guard let responseStream = await req.createResponseStream() else { return }
+        await responseStream.destroy(
+          error: RPCRemoteError(message: "server error", code: "ERR_SERVER"))
+      }
+
+      let (_, incoming) = try await pair.client.createBidirectionalStream(command: 1)
+
+      do {
+        for try await _ in incoming {}
+        completedWithoutError += 1
+      } catch is RPCRemoteError {
+        // expected
+      }
+    }
+
+    #expect(completedWithoutError == 0)
+  }
+
   @Test func bidirectionalClientDestroysRequestStream() async throws {
     let pair = RPCPair()
 

@@ -1,5 +1,9 @@
 # Changelog
 
+Entries land under Unreleased and move to a version heading when that version is tagged.
+
+## Unreleased
+
 ## 1.0.0
 
 First stable release.

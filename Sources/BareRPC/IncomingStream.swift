@@ -53,15 +53,18 @@ public actor IncomingStream: AsyncSequence {
     guard !finished else { return }
     finished = true
     if let error {
-      await rpc?.sendData(
-        Messages.encodeStream(
-          id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error))
+      // Hand the error to the consumer before sending, which suspends: a reader
+      // entering during that await would otherwise see finished with no pending
+      // error and end the sequence cleanly, losing the error.
       if let waiter {
         self.waiter = nil
         waiter.resume(throwing: error)
       } else {
         pendingError = error
       }
+      await rpc?.sendData(
+        Messages.encodeStream(
+          id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error))
     } else {
       await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
       if let waiter {

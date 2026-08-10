@@ -100,15 +100,17 @@ import Testing
     }
   }
 
-  /// A rejected frame either throws or decodes to nil. This port returns nil for
-  /// an unknown type tag where JS throws - callers treat nil as "ignore" - so
-  /// both outcomes count as rejection here.
+  /// Both classes of rejected frame - malformed, and well-formed with an
+  /// unrecognized type - must be signalled, not skipped. See Rejecting frames in
+  /// hrpc-test's WIRE.md.
   @Test func rejectsNegativeFrames() throws {
     for entry in try Vectors.negative() {
       let reason = entry["reason"] as! String
       let frame = Vectors.data(hex: entry["hex"] as! String)
 
-      #expect((try? Messages.decodeFrame(frame)) ?? nil == nil, "\(reason): decoded a value")
+      #expect(throws: (any Error).self, "\(reason)") {
+        try Messages.decodeFrame(frame)
+      }
     }
   }
 

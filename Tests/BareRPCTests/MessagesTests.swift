@@ -112,12 +112,13 @@ import Testing
     #expect(errno == 42)
   }
 
-  @Test func unknownMessageTypeReturnsNil() throws {
+  @Test func unknownMessageTypeThrows() throws {
     var body = Data()
     body.append(99)
     let frame = makeRawFrame(body)
-    let result = try Messages.decodeFrame(frame)
-    #expect(result == nil)
+    #expect(throws: MessagesError.unknownMessageType) {
+      try Messages.decodeFrame(frame)
+    }
   }
 
   @Test func requestWithNonZeroStreamDecodes() throws {

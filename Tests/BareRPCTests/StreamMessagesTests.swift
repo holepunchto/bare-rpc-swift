@@ -111,7 +111,7 @@ import Testing
       return
     }
     #expect(s.flags == StreamFlag.request | StreamFlag.data)
-    #expect(s.data == nil)
+    #expect(s.data == Data())
     #expect(s.error == nil)
   }
 

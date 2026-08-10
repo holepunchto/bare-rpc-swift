@@ -59,7 +59,7 @@ struct RequestMessageCodec: Codec {
     let stream = try Primitive.UInt().decode(&state)
     if stream == 0 {
       let raw = try Primitive.Buffer().decode(&state)
-      return RequestMessage(id: id, command: command, stream: stream, data: raw.isEmpty ? nil : raw)
+      return RequestMessage(id: id, command: command, stream: stream, data: raw)
     }
     return RequestMessage(id: id, command: command, stream: stream, data: nil)
   }
@@ -118,7 +118,7 @@ struct ResponseMessageCodec: Codec {
     }
     if stream == 0 {
       let raw = try Primitive.Buffer().decode(&state)
-      return ResponseMessage(id: id, stream: stream, result: .success(raw.isEmpty ? nil : raw))
+      return ResponseMessage(id: id, stream: stream, result: .success(raw))
     }
     return ResponseMessage(id: id, stream: stream, result: .success(nil))
   }
@@ -165,7 +165,7 @@ struct StreamMessageCodec: Codec {
         error: RPCRemoteError(message: message, code: code, errno: errno))
     } else if flags & StreamFlag.data != 0 {
       let raw = try Primitive.Buffer().decode(&state)
-      return StreamMessage(id: id, flags: flags, data: raw.isEmpty ? nil : raw, error: nil)
+      return StreamMessage(id: id, flags: flags, data: raw, error: nil)
     }
     return StreamMessage(id: id, flags: flags, data: nil, error: nil)
   }

@@ -36,8 +36,7 @@ import Testing
     }
     #expect(req.id == 2)
     #expect(req.command == 7)
-    // Swift flattens empty data to nil on decode (documented divergence).
-    #expect(req.data == nil)
+    #expect(req.data == Data())
   }
 
   @Test func eventWithData() throws {
@@ -66,7 +65,7 @@ import Testing
     }
     #expect(req.id == 0)
     #expect(req.command == 99)
-    #expect(req.data == nil)
+    #expect(req.data == Data())
   }
 
   @Test func requestLargeCommand() throws {
@@ -159,7 +158,7 @@ import Testing
       Issue.record("expected success")
       return
     }
-    #expect(data == nil)
+    #expect(data == Data())
   }
 
   @Test func responseSuccess() throws {

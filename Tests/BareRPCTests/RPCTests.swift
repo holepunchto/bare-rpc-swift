@@ -76,11 +76,13 @@ final class RPCPair {
     #expect(response == payload)
   }
 
+  /// Replying with nil puts a zero-length payload on the wire, which the peer
+  /// decodes as an empty buffer - the wire cannot tell the two apart.
   @Test func requestWithNilResponse() async throws {
     let pair = RPCPair()
     pair.serverDelegate.onRequest = { req in await req.reply(nil) }
     let response = try await pair.client.request(1, data: nil)
-    #expect(response == nil)
+    #expect(response == Data())
   }
 
   @Test func requestRejection() async throws {

@@ -63,7 +63,7 @@ import Testing
     let (outgoing, response) = try await pair.client.streamRequest(command: 1)
     await outgoing.end()
 
-    #expect(try await response() == nil)
+    #expect(try await response() == Data())
   }
 
   // Connection failure before reply drains the pending continuation.

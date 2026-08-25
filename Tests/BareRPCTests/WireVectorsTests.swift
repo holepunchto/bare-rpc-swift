@@ -10,7 +10,7 @@ import Testing
 /// this repo, so they cannot drift from upstream the way a vendored set would.
 @Suite struct WireVectorsTests {
 
-  static let families = ["envelope", "error", "boundary", "dispatch"]
+  static let families = ["envelope", "error", "boundary", "dispatch", "dispatch-sparse"]
 
   @Test(arguments: families) func decodes(_ family: String) throws {
     let (frames, messages) = try Vectors.family(family)

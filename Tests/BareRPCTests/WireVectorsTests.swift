@@ -20,44 +20,57 @@ import Testing
       let note = message["note"] as? String ?? family
       let descriptor = message["descriptor"] as! [String: Any]
 
-      guard let decoded = try Messages.decodeFrame(Vectors.data(hex: frame)) else {
-        Issue.record("\(note): decoded to nil")
-        continue
+      try expectDecoded(frame: frame, descriptor: descriptor, note: note)
+    }
+  }
+
+  @Test func decodesDecodeOnlyFrames() throws {
+    for entry in try Vectors.decodeOnly() {
+      try expectDecoded(
+        frame: entry["hex"] as! String,
+        descriptor: entry["descriptor"] as! [String: Any],
+        note: entry["reason"] as! String)
+    }
+  }
+
+  private func expectDecoded(frame: String, descriptor: [String: Any], note: String) throws {
+    guard let decoded = try Messages.decodeFrame(Vectors.data(hex: frame)) else {
+      Issue.record("\(note): decoded to nil")
+      return
+    }
+
+    switch decoded {
+    case .request(let request):
+      #expect(descriptor["type"] as? Int == 1, "\(note): is a request")
+      #expect(request.id == UInt(descriptor["id"] as! Int), "\(note): id")
+      #expect(request.command == UInt(descriptor["command"] as! Int), "\(note): command")
+      #expect(request.stream == UInt(descriptor["stream"] as! Int), "\(note): stream")
+      Vectors.expectPayload(request.data, descriptor, note)
+
+    case .response(let response):
+      #expect(descriptor["type"] as? Int == 2, "\(note): is a response")
+      #expect(response.id == UInt(descriptor["id"] as! Int), "\(note): id")
+      #expect(response.stream == UInt(descriptor["stream"] as! Int), "\(note): stream")
+
+      switch response.result {
+      case .success(let data):
+        Vectors.expectPayload(data, descriptor, note)
+      case .remoteError(let message, let code, let errno):
+        let expected = descriptor["error"] as! [String: Any]
+        #expect(message == expected["message"] as? String, "\(note): error message")
+        #expect(code == expected["code"] as? String, "\(note): error code")
+        #expect(errno == expected["errno"] as? Int, "\(note): error errno")
       }
 
-      switch decoded {
-      case .request(let request):
-        #expect(descriptor["type"] as? Int == 1, "\(note): is a request")
-        #expect(request.id == UInt(descriptor["id"] as! Int), "\(note): id")
-        #expect(request.command == UInt(descriptor["command"] as! Int), "\(note): command")
-        #expect(request.stream == UInt(descriptor["stream"] as! Int), "\(note): stream")
-        Vectors.expectPayload(request.data, descriptor, note)
+    case .stream(let stream):
+      #expect(descriptor["type"] as? Int == 3, "\(note): is a stream frame")
+      #expect(stream.id == UInt(descriptor["id"] as! Int), "\(note): id")
+      #expect(stream.flags == UInt(descriptor["stream"] as! Int), "\(note): flags")
 
-      case .response(let response):
-        #expect(descriptor["type"] as? Int == 2, "\(note): is a response")
-        #expect(response.id == UInt(descriptor["id"] as! Int), "\(note): id")
-        #expect(response.stream == UInt(descriptor["stream"] as! Int), "\(note): stream")
-
-        switch response.result {
-        case .success(let data):
-          Vectors.expectPayload(data, descriptor, note)
-        case .remoteError(let message, let code, let errno):
-          let expected = descriptor["error"] as! [String: Any]
-          #expect(message == expected["message"] as? String, "\(note): error message")
-          #expect(code == expected["code"] as? String, "\(note): error code")
-          #expect(errno == expected["errno"] as? Int, "\(note): error errno")
-        }
-
-      case .stream(let stream):
-        #expect(descriptor["type"] as? Int == 3, "\(note): is a stream frame")
-        #expect(stream.id == UInt(descriptor["id"] as! Int), "\(note): id")
-        #expect(stream.flags == UInt(descriptor["stream"] as! Int), "\(note): flags")
-
-        if let expected = descriptor["error"] as? [String: Any] {
-          #expect(stream.error?.message == expected["message"] as? String, "\(note): error")
-        } else {
-          Vectors.expectPayload(stream.data, descriptor, note)
-        }
+      if let expected = descriptor["error"] as? [String: Any] {
+        #expect(stream.error?.message == expected["message"] as? String, "\(note): error")
+      } else {
+        Vectors.expectPayload(stream.data, descriptor, note)
       }
     }
   }
@@ -161,6 +174,10 @@ enum Vectors {
 
   static func negative() throws -> [[String: Any]] {
     try json("negative/frames.json") as! [[String: Any]]
+  }
+
+  static func decodeOnly() throws -> [[String: Any]] {
+    try json("decode-only/frames.json") as! [[String: Any]]
   }
 
   static func sequence() throws -> [String: Any] {

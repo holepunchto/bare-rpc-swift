@@ -233,7 +233,7 @@ struct FrameCodec: Codec {
   func decode(_ state: inout State) throws -> DecodedMessage? {
     _ = try Primitive.UInt32().decode(&state)
     // An unrecognized type is a decode error, not a frame to skip - see
-    // Rejecting frames in hrpc-test's WIRE.md
+    // Rejecting frames in bare-rpc-test's WIRE.md
     return try DecodedMessageCodec().decode(&state)
   }
 }

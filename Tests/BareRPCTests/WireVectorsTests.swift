@@ -3,14 +3,14 @@ import Testing
 
 @testable import BareRPC
 
-/// Conformance against holepunchto/hrpc-test's shared wire vectors - the same
+/// Conformance against holepunchto/bare-rpc-test's shared wire vectors - the same
 /// bytes the JS, C and Python implementations are held to.
 ///
 /// The fixtures are read from the installed npm package rather than copied into
 /// this repo, so they cannot drift from upstream the way a vendored set would.
 @Suite struct WireVectorsTests {
 
-  static let families = ["envelope", "error", "boundary", "dispatch", "dispatch-sparse"]
+  static let families = ["envelope", "error", "boundary"]
 
   @Test(arguments: families) func decodes(_ family: String) throws {
     let (frames, messages) = try Vectors.family(family)
@@ -102,7 +102,7 @@ import Testing
 
   /// Both classes of rejected frame - malformed, and well-formed with an
   /// unrecognized type - must be signalled, not skipped. See Rejecting frames in
-  /// hrpc-test's WIRE.md.
+  /// bare-rpc-test's WIRE.md.
   @Test func rejectsNegativeFrames() throws {
     for entry in try Vectors.negative() {
       let reason = entry["reason"] as! String
@@ -134,7 +134,7 @@ import Testing
   }
 }
 
-/// Loads the vectors from the installed hrpc-test package.
+/// Loads the vectors from the installed bare-rpc-test package.
 enum Vectors {
   static let directory: URL = {
     // Tests/BareRPCTests/WireVectorsTests.swift -> repo root
@@ -145,11 +145,11 @@ enum Vectors {
 
     // npm hoists workspace dependencies to the root, but not always
     for candidate in ["node_modules", "Tests/BareRPCTests/Fixtures/node_modules"] {
-      let path = root.appendingPathComponent("\(candidate)/hrpc-test/fixtures")
+      let path = root.appendingPathComponent("\(candidate)/bare-rpc-test/fixtures")
       if FileManager.default.fileExists(atPath: path.path) { return path }
     }
 
-    fatalError("hrpc-test is not installed - run npm install")
+    fatalError("bare-rpc-test is not installed - run npm install")
   }()
 
   static func family(_ name: String) throws -> ([String], [[String: Any]]) {

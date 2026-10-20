@@ -40,7 +40,7 @@ import Testing
       return
     }
     // nil and empty encode identically, so a payload-bearing frame always
-    // decodes to a buffer - see Payload handling in hrpc-test's WIRE.md
+    // decodes to a buffer - see Payload handling in bare-rpc-test's WIRE.md
     #expect(req.data == Data())
   }
 

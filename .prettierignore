@@ -1,3 +1,4 @@
 .build/
+.swiftpm/
 node_modules/
 Package.resolved

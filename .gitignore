@@ -1,4 +1,5 @@
 .build/
-Package.resolved
+.swiftpm/
 node_modules/
+Package.resolved
 package-lock.json

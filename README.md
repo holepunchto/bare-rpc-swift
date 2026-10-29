@@ -1,26 +1,19 @@
 # bare-rpc-swift
 
-Swift implementation of the [`bare-rpc`](https://github.com/holepunchto/bare-rpc) protocol - a binary RPC framework using compact encoding over arbitrary transports. Wire-compatible with the JavaScript `bare-rpc` module and the C `librpc` library.
+RPC over any byte transport for Swift. The Swift counterpart of [bare-rpc](https://github.com/holepunchto/bare-rpc), and wire compatible with it. Built on [compact-encoding-swift](https://github.com/holepunchto/compact-encoding-swift).
 
 ## Installation
 
-Add the package to your `Package.swift`:
-
 ```swift
 dependencies: [
-  .package(url: "https://github.com/holepunchto/bare-rpc-swift", from: "1.0.0")
+  .package(url: "https://github.com/holepunchto/bare-rpc-swift", from: "<tag>")
 ]
 ```
 
-Then add `BareRPC` to your target's dependencies:
+Then add `BareRPC` to the dependencies of your target:
 
 ```swift
-.target(
-  name: "MyTarget",
-  dependencies: [
-    .product(name: "BareRPC", package: "bare-rpc-swift")
-  ]
-)
+.product(name: "BareRPC", package: "bare-rpc-swift")
 ```
 
 ## Usage
@@ -63,21 +56,6 @@ print(String(data: reply!, encoding: .utf8)!)  // pong
 ```
 
 For fire-and-forget messages use `event(_:data:)`, delivered to `rpc(_:didReceiveEvent:)`. `RPC` also supports streaming requests and responses; see `createRequestStream`, `streamRequest`, `requestWithResponseStream`, and `createBidirectionalStream`.
-
-## Build & test
-
-```sh
-swift build
-swift test
-```
-
-`BareInteropTests` spawns a live JS peer via `bare`. Tests skip locally without it; CI (`CI=true`) treats missing prerequisites as hard failures.
-
-```sh
-npm install -g bare-runtime
-npm install
-swift test --filter BareInteropTests
-```
 
 ## License
 

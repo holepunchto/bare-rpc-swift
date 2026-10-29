@@ -1,0 +1,14 @@
+name: Publish
+on:
+  push:
+    tags:
+      - v*
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    name: Publish
+    steps:
+      - uses: holepunchto/actions/swift-base@v1
+      - uses: holepunchto/actions/publish-swift@v1

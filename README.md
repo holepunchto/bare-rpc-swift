@@ -2,17 +2,11 @@
 
 RPC over any byte transport for Swift. The Swift counterpart of [bare-rpc](https://github.com/holepunchto/bare-rpc), and wire compatible with it. Built on [compact-encoding-swift](https://github.com/holepunchto/compact-encoding-swift).
 
-## Installation
-
 ```swift
 dependencies: [
   .package(url: "https://github.com/holepunchto/bare-rpc-swift", from: "<tag>")
 ]
-```
 
-Then add `BareRPC` to the dependencies of your target:
-
-```swift
 .product(name: "BareRPC", package: "bare-rpc-swift")
 ```
 

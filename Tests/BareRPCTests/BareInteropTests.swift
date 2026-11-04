@@ -25,9 +25,9 @@ import Testing
     }
 
     let stream = try await peer.rpc.createRequestStream(command: Command.requestStreamCollector)
-    await stream.write(Data("foo".utf8))
-    await stream.write(Data("bar".utf8))
-    await stream.write(Data("baz".utf8))
+    try await stream.write(Data("foo".utf8))
+    try await stream.write(Data("bar".utf8))
+    try await stream.write(Data("baz".utf8))
     await stream.end()
 
     for await event in events where event.command == Command.requestStreamCollectorReply {
@@ -44,9 +44,9 @@ import Testing
     peer.delegate.onEvent = { event in continuation.yield(event) }
 
     let outgoing = try await peer.rpc.createRequestStream(command: Command.requestStreamCollector)
-    await outgoing.write(Data("foo".utf8))
-    await outgoing.write(Data("bar".utf8))
-    await outgoing.write(Data("baz".utf8))
+    try await outgoing.write(Data("foo".utf8))
+    try await outgoing.write(Data("bar".utf8))
+    try await outgoing.write(Data("baz".utf8))
     await outgoing.end()
 
     async let incomingChunks: [Data] = {
@@ -101,7 +101,7 @@ import Testing
 @MainActor
 final class BarePeer {
   let rpc: RPC
-  let delegate: BarePeerDelegate
+  let delegate: BarePeerHandlers
   private let process: Process
   private let stdinPipe: Pipe
   private let stdoutPipe: Pipe
@@ -111,16 +111,26 @@ final class BarePeer {
     self.process = process
     self.stdinPipe = stdinPipe
     self.stdoutPipe = stdoutPipe
-    self.delegate = BarePeerDelegate(writeHandle: stdinPipe.fileHandleForWriting)
-    let rpc = RPC(delegate: self.delegate)
-    self.rpc = rpc
-    // Serialize through one MainActor task; spawning a Task per chunk
-    // loses FIFO across hops (CI saw bytes arrive as [1, 3, 2]).
+    let handlers = BarePeerHandlers()
+    self.delegate = handlers
+    let writeHandle = stdinPipe.fileHandleForWriting
     let (byteStream, byteCont) = AsyncStream<Data>.makeStream()
     self.stdoutContinuation = byteCont
-    Task { @MainActor in
-      for await data in byteStream {
-        await rpc.receive(data)
+    self.rpc = RPC(
+      AnyTransport(
+        byteStream, write: { try writeHandle.write(contentsOf: $0) },
+        close: { try? writeHandle.close() }),
+      onRequest: { request in
+        Issue.record("unexpected request from peer: command=\(request.command)")
+      },
+      onEvent: { event in await MainActor.run { handlers.onEvent?(event) } }
+    )
+    let rpc = self.rpc
+    Task {
+      do {
+        try await rpc.wait()
+      } catch {
+        handlers.onError?(error)
       }
     }
   }
@@ -207,37 +217,9 @@ final class BarePeer {
   }
 }
 
-final class BarePeerDelegate: RPCDelegate, @unchecked Sendable {
+final class BarePeerHandlers: @unchecked Sendable {
   var onEvent: (@MainActor (IncomingEvent) -> Void)?
   var onError: ((Error) -> Void)?
-
-  private let writeHandle: FileHandle
-
-  init(writeHandle: FileHandle) {
-    self.writeHandle = writeHandle
-  }
-
-  func rpc(_ rpc: RPC, send data: Data) {
-    do {
-      try writeHandle.write(contentsOf: data)
-    } catch {
-      onError?(error)
-    }
-  }
-
-  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
-    Issue.record("unexpected request from peer: command=\(request.command)")
-  }
-
-  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {
-    await MainActor.run {
-      onEvent?(event)
-    }
-  }
-
-  func rpc(_ rpc: RPC, didFailWith error: Error) {
-    onError?(error)
-  }
 }
 
 // MARK: - Helpers

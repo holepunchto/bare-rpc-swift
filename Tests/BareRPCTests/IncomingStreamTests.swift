@@ -7,12 +7,12 @@ import Testing
 
   private final class Fixture {
     let rpc: RPC
-    let delegate: CaptureDelegate
+    let delegate: Capture
     let stream: IncomingStream
 
     init(id: UInt = 1, mask: UInt = StreamFlag.request) {
-      let delegate = CaptureDelegate()
-      let rpc = RPC(delegate: delegate)
+      let delegate = Capture()
+      let rpc = delegate.rpc()
       self.delegate = delegate
       self.rpc = rpc
       self.stream = IncomingStream(requestId: id, mask: mask, rpc: rpc)
@@ -176,6 +176,7 @@ import Testing
       Issue.record("Expected error to be thrown")
     } catch let err as RPCRemoteError {
       #expect(err.message == "fail")
+      #expect(err.code == "ERR")
     }
   }
 

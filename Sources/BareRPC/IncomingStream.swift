@@ -1,78 +1,114 @@
 import Foundation
 
+/// The body of a request or response that the peer sends, read by iterating
+/// it.
 public actor IncomingStream: AsyncSequence {
   public typealias Element = Data
 
+  /// The id of the request that the stream belongs to.
   public nonisolated let requestId: UInt
-  public nonisolated let mask: UInt
+  nonisolated let mask: UInt
+  /// The number of buffered bytes at which the peer is asked to pause. It is
+  /// asked to resume once fewer bytes than this are buffered.
   public nonisolated let highWaterMark: Int
-  public nonisolated let lowWaterMark: Int
-  public private(set) var finished = false
+  /// Whether the peer has ended the stream or it has been destroyed. Chunks
+  /// that are already buffered can still be read.
+  public private(set) var isFinished = false
+
+  // The default of the JS streams of bare-rpc, which bare-stream inherits from streamx.
+  static let defaultHighWaterMark = 16384
 
   private weak var rpc: RPC?
+  // Chunks before `head` have been read, and are dropped once they make up
+  // half of the buffer, so that each read is amortized O(1).
   private var buffer: [Data] = []
+  private var head = 0
+  private var bufferedBytes = 0
   private var pendingError: Error?
   private var paused = false
   private var waiter: CheckedContinuation<Data?, Error>?
 
-  init(requestId: UInt, mask: UInt, rpc: RPC, highWaterMark: Int = 16, lowWaterMark: Int = 4) {
-    precondition(highWaterMark > 0 && lowWaterMark >= 0 && lowWaterMark < highWaterMark)
+  init(
+    requestId: UInt, mask: UInt, rpc: RPC,
+    highWaterMark: Int = IncomingStream.defaultHighWaterMark
+  ) {
+    precondition(highWaterMark > 0)
     self.requestId = requestId
     self.mask = mask
     self.rpc = rpc
     self.highWaterMark = highWaterMark
-    self.lowWaterMark = lowWaterMark
   }
 
-  func push(_ data: Data) async {
-    guard !finished else { return }
+  /// Returns the number of bytes buffered and not yet read.
+  @discardableResult
+  func push(_ data: Data) async -> Int {
+    guard !isFinished else { return bufferedBytes }
     if let waiter {
       self.waiter = nil
       waiter.resume(returning: data)
-      return
+      return bufferedBytes
     }
     buffer.append(data)
-    if buffer.count >= highWaterMark && !paused {
+    bufferedBytes += data.count
+    if bufferedBytes >= highWaterMark && !paused {
       paused = true
       await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.pause))
     }
+    return bufferedBytes
   }
 
   func end() async {
-    guard !finished else { return }
-    finished = true
-    if let waiter {
-      self.waiter = nil
-      waiter.resume(returning: nil)
-    }
-    await rpc?.removeIncomingStream(forId: requestId)
+    guard !isFinished else { return }
+    isFinished = true
+    finishReader()
+    await rpc?.removeIncomingStream(self)
   }
 
-  // Also emits DESTROY when called by the dispatcher on a remote CLOSE+ERROR (JS parity).
+  func abort(_ error: Error) {
+    guard !isFinished else { return }
+    isFinished = true
+    throwToReader(error)
+  }
+
+  private func throwToReader(_ error: Error) {
+    if let waiter {
+      self.waiter = nil
+      waiter.resume(throwing: error)
+    } else {
+      pendingError = error
+    }
+  }
+
+  private func finishReader() {
+    guard let waiter else { return }
+    self.waiter = nil
+    waiter.resume(returning: nil)
+  }
+
   public func destroy(error: RPCRemoteError? = nil) async {
-    guard !finished else { return }
-    finished = true
+    await destroy(error: error, waiting: true)
+  }
+
+  // A CLOSE with an error from the peer also destroys the stream, which sends
+  // DESTROY back, as in JS.
+  func destroy(error: RPCRemoteError?, waiting: Bool) async {
+    guard !isFinished else { return }
+    isFinished = true
     if let error {
       // Hand the error to the consumer before sending, which suspends: a reader
-      // entering during that await would otherwise see finished with no pending
+      // entering during that await would otherwise see the stream finished with no pending
       // error and end the sequence cleanly, losing the error.
-      if let waiter {
-        self.waiter = nil
-        waiter.resume(throwing: error)
-      } else {
-        pendingError = error
-      }
-      await rpc?.sendData(
+      throwToReader(error)
+      await rpc?.send(
         Messages.encodeStream(
-          id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error))
+          id: requestId, flags: mask | StreamFlag.destroy | StreamFlag.error, error: error),
+        waiting: waiting)
     } else {
-      await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy))
-      if let waiter {
-        self.waiter = nil
-        waiter.resume(returning: nil)
-      }
+      await rpc?.send(
+        Messages.encodeStream(id: requestId, flags: mask | StreamFlag.destroy), waiting: waiting)
+      finishReader()
     }
-    await rpc?.removeIncomingStream(forId: requestId)
+    await rpc?.removeIncomingStream(self)
   }
 
   public nonisolated func makeAsyncIterator() -> AsyncIterator {
@@ -95,9 +131,15 @@ public actor IncomingStream: AsyncSequence {
 
   fileprivate func nextChunk() async throws -> Data? {
     precondition(waiter == nil, "IncomingStream does not support concurrent iteration")
-    if !buffer.isEmpty {
-      let data = buffer.removeFirst()
-      if buffer.count <= lowWaterMark && paused {
+    if head < buffer.count {
+      let data = buffer[head]
+      head += 1
+      if head * 2 >= buffer.count {
+        buffer.removeFirst(head)
+        head = 0
+      }
+      bufferedBytes -= data.count
+      if bufferedBytes < highWaterMark && paused {
         paused = false
         await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
       }
@@ -107,7 +149,7 @@ public actor IncomingStream: AsyncSequence {
       pendingError = nil
       throw error
     }
-    if finished {
+    if isFinished {
       return nil
     }
     return try await withCheckedThrowingContinuation { cont in

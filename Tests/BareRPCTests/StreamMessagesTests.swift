@@ -153,7 +153,7 @@ import Testing
 
   @Test func requestWithStreamOmitsDataFromWire() throws {
     // JS wire format: when stream != 0, no data field is encoded
-    // Frame should be: [4-byte len][type=1][id][command][stream] — no buffer field
+    // Frame should be: [4-byte len][type=1][id][command][stream] - no buffer field
     let frame = Messages.encodeRequest(id: 5, command: 1, stream: StreamFlag.open, data: nil)
     let bodyLen = readBodyLen(frame)
     // Compare with a stream=0 request with nil data to verify stream!=0 is shorter

@@ -190,13 +190,11 @@ import Testing
       return
     }
     #expect(resp.id == 1)
-    guard case .remoteError(let message, let code, let errno) = resp.result else {
+    guard case .remoteError(let error) = resp.result else {
       Issue.record("expected remote error")
       return
     }
-    #expect(message == "boom")
-    #expect(code == "EBOOM")
-    #expect(errno == -2)
+    #expect(error == RPCRemoteError(message: "boom", code: "EBOOM", errno: -2))
   }
 
   @Test func responseErrorZeroErrno() throws {
@@ -205,12 +203,12 @@ import Testing
     #expect(frame == fixture)
 
     guard case .response(let resp) = try Messages.decodeFrame(fixture),
-      case .remoteError(_, _, let errno) = resp.result
+      case .remoteError(let error) = resp.result
     else {
       Issue.record("expected remote error")
       return
     }
-    #expect(errno == 0)
+    #expect(error.errno == 0)
   }
 
   @Test func responseErrorPositiveErrno() throws {
@@ -221,28 +219,28 @@ import Testing
     #expect(frame == fixture)
 
     guard case .response(let resp) = try Messages.decodeFrame(fixture),
-      case .remoteError(_, _, let errno) = resp.result
+      case .remoteError(let error) = resp.result
     else {
       Issue.record("expected remote error")
       return
     }
-    #expect(errno == 42)
+    #expect(error.errno == 42)
   }
 
   @Test func responseErrorNegativeMaxErrno() throws {
-    // INT32_MIN — c.int zigzag lower bound.
+    // INT32_MIN - c.int zigzag lower bound.
     let fixture = hex("140000000201010004626f6f6d0545424f4f4dfeffffffff")
     let frame = Messages.encodeErrorResponse(
       id: 1, message: "boom", code: "EBOOM", errno: -2_147_483_648)
     #expect(frame == fixture)
 
     guard case .response(let resp) = try Messages.decodeFrame(fixture),
-      case .remoteError(_, _, let errno) = resp.result
+      case .remoteError(let error) = resp.result
     else {
       Issue.record("expected remote error")
       return
     }
-    #expect(errno == -2_147_483_648)
+    #expect(error.errno == -2_147_483_648)
   }
 
   @Test func responseErrorLongMessage() throws {
@@ -257,12 +255,12 @@ import Testing
     #expect(frame == fixture)
 
     guard case .response(let resp) = try Messages.decodeFrame(fixture),
-      case .remoteError(let message, _, _) = resp.result
+      case .remoteError(let error) = resp.result
     else {
       Issue.record("expected remote error")
       return
     }
-    #expect(message == longMessage)
+    #expect(error.message == longMessage)
   }
 
   @Test func responseStreamOpenOmitsData() throws {

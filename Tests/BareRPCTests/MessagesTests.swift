@@ -82,13 +82,11 @@ import Testing
       return
     }
     #expect(resp.id == 4)
-    guard case .remoteError(let message, let code, let errno) = resp.result else {
+    guard case .remoteError(let error) = resp.result else {
       Issue.record("Expected remoteError")
       return
     }
-    #expect(message == "Not found")
-    #expect(code == "NOT_FOUND")
-    #expect(errno == 0)
+    #expect(error == RPCRemoteError(message: "Not found", code: "NOT_FOUND", errno: 0))
   }
 
   @Test func framePrefixIsBodyLength() throws {
@@ -105,20 +103,19 @@ import Testing
       Issue.record("Expected response")
       return
     }
-    guard case .remoteError(let message, let code, let errno) = resp.result else {
+    guard case .remoteError(let error) = resp.result else {
       Issue.record("Expected remoteError")
       return
     }
-    #expect(message == "fail")
-    #expect(code == "ENOENT")
-    #expect(errno == 42)
+    #expect(error == RPCRemoteError(message: "fail", code: "ENOENT", errno: 42))
   }
 
   @Test func unknownMessageTypeThrows() throws {
     var body = Data()
     body.append(99)
+    body.append(0)
     let frame = makeRawFrame(body)
-    #expect(throws: MessagesError.unknownMessageType) {
+    #expect(throws: RPCError.unknownMessage(type: 99)) {
       try Messages.decodeFrame(frame)
     }
   }

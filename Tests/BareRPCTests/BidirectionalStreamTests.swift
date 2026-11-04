@@ -8,25 +8,22 @@ import Testing
   @Test func bidirectionalEcho() async throws {
     let pair = RPCPair()
 
-    pair.serverDelegate.onRequest = { req in
-      guard let requestStream = req.requestStream else {
+    pair.serverSide.onRequest = { req in
+      guard let requestStream = try await req.createRequestStream() else {
         Issue.record("Expected request stream")
         return
       }
-      guard let responseStream = await req.createResponseStream() else {
-        Issue.record("Expected to create response stream")
-        return
-      }
+      let responseStream = try await req.createResponseStream()
       for try await chunk in requestStream {
-        await responseStream.write(chunk)
+        try await responseStream.write(chunk)
       }
       await responseStream.end()
     }
 
     let (outgoing, incoming) = try await pair.client.createBidirectionalStream(command: 42)
 
-    await outgoing.write(Data([1, 2, 3]))
-    await outgoing.write(Data([4, 5, 6]))
+    try await outgoing.write(Data([1, 2, 3]))
+    try await outgoing.write(Data([4, 5, 6]))
     await outgoing.end()
 
     var received: [Data] = []
@@ -39,8 +36,8 @@ import Testing
   @Test func bidirectionalServerDestroysResponseStream() async throws {
     let pair = RPCPair()
 
-    pair.serverDelegate.onRequest = { req in
-      guard let responseStream = await req.createResponseStream() else { return }
+    pair.serverSide.onRequest = { req in
+      let responseStream = try await req.createResponseStream()
       await responseStream.destroy(
         error: RPCRemoteError(message: "server error", code: "ERR_SERVER"))
     }
@@ -65,8 +62,8 @@ import Testing
     for _ in 0..<200 {
       let pair = RPCPair()
 
-      pair.serverDelegate.onRequest = { req in
-        guard let responseStream = await req.createResponseStream() else { return }
+      pair.serverSide.onRequest = { req in
+        let responseStream = try await req.createResponseStream()
         await responseStream.destroy(
           error: RPCRemoteError(message: "server error", code: "ERR_SERVER"))
       }
@@ -88,12 +85,12 @@ import Testing
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.serverDelegate.onRequest = { req in
-        guard let requestStream = req.requestStream else {
+      pair.serverSide.onRequest = { req in
+        guard let requestStream = try await req.createRequestStream() else {
           Issue.record("Expected request stream")
           return
         }
-        _ = await req.createResponseStream()
+        _ = try await req.createResponseStream()
         var chunks: [Data] = []
         for try await chunk in requestStream {
           chunks.append(chunk)
@@ -103,7 +100,7 @@ import Testing
       }
 
       let (outgoing, _) = try await pair.client.createBidirectionalStream(command: 1)
-      await outgoing.write(Data([0xAB]))
+      try await outgoing.write(Data([0xAB]))
       await outgoing.destroy()
 
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -113,19 +110,18 @@ import Testing
   @Test func bidirectionalMultiChunkEcho() async throws {
     let pair = RPCPair()
 
-    pair.serverDelegate.onRequest = { req in
-      guard let requestStream = req.requestStream,
-        let responseStream = await req.createResponseStream()
-      else { return }
+    pair.serverSide.onRequest = { req in
+      guard let requestStream = try await req.createRequestStream() else { return }
+      let responseStream = try await req.createResponseStream()
       for try await chunk in requestStream {
-        await responseStream.write(chunk)
+        try await responseStream.write(chunk)
       }
       await responseStream.end()
     }
 
     let (outgoing, incoming) = try await pair.client.createBidirectionalStream(command: 1)
 
-    // Read concurrently with writes — required for bidir: sequential write-then-read
+    // Read concurrently with writes - required for bidir: sequential write-then-read
     // can deadlock if the echo path's receive buffer fills before the client starts reading.
     let readTask = Task {
       var result: [Data] = []
@@ -134,7 +130,7 @@ import Testing
     }
 
     for i in 0..<16 {
-      await outgoing.write(Data([UInt8(i)]))
+      try await outgoing.write(Data([UInt8(i)]))
     }
     await outgoing.end()
 
@@ -145,8 +141,8 @@ import Testing
   }
 
   @Test func createBidirectionalStreamAfterFailThrowsFailureError() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 50)
 
     await rpc.receive(makeRawHeader(claimingBodyLen: 200))
 

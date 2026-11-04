@@ -55,11 +55,11 @@ import Testing
       switch response.result {
       case .success(let data):
         Vectors.expectPayload(data, descriptor, note)
-      case .remoteError(let message, let code, let errno):
+      case .remoteError(let error):
         let expected = descriptor["error"] as! [String: Any]
-        #expect(message == expected["message"] as? String, "\(note): error message")
-        #expect(code == expected["code"] as? String, "\(note): error code")
-        #expect(errno == expected["errno"] as? Int, "\(note): error errno")
+        #expect(error.message == expected["message"] as? String, "\(note): error message")
+        #expect(error.code == expected["code"] as? String, "\(note): error code")
+        #expect(error.errno == expected["errno"] as? Int, "\(note): error errno")
       }
 
     case .stream(let stream):

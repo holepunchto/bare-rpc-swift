@@ -3,73 +3,11 @@ import Testing
 
 @testable import BareRPC
 
-class PipeDelegate: RPCDelegate {
-  weak var peer: RPC?
-  var onRequest: ((IncomingRequest) async throws -> Void)?
-  var onEvent: ((IncomingEvent) async -> Void)?
-  var onError: ((Error) -> Void)?
-  private var pendingDelivery: Task<Void, Never> = Task {}
-
-  public func rpc(_ rpc: RPC, send data: Data) {
-    let peer = self.peer
-    let prev = pendingDelivery
-    pendingDelivery = Task {
-      await prev.value
-      await peer?.receive(data)
-    }
-  }
-  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
-    try await onRequest?(request)
-  }
-  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {
-    await onEvent?(event)
-  }
-  func rpc(_ rpc: RPC, didFailWith error: Error) {
-    onError?(error)
-  }
-}
-
-class CaptureDelegate: RPCDelegate {
-  var onSend: ((Data) -> Void)?
-  var onRequest: ((IncomingRequest) async throws -> Void)?
-  var onEvent: ((IncomingEvent) async -> Void)?
-  var onError: ((Error) -> Void)?
-
-  func rpc(_ rpc: RPC, send data: Data) {
-    onSend?(data)
-  }
-  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {
-    try await onRequest?(request)
-  }
-  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {
-    await onEvent?(event)
-  }
-  func rpc(_ rpc: RPC, didFailWith error: Error) {
-    onError?(error)
-  }
-}
-
-final class RPCPair {
-  let client: RPC
-  let server: RPC
-  let clientDelegate: PipeDelegate
-  let serverDelegate: PipeDelegate
-
-  init() {
-    clientDelegate = PipeDelegate()
-    serverDelegate = PipeDelegate()
-    client = RPC(delegate: clientDelegate)
-    server = RPC(delegate: serverDelegate)
-    clientDelegate.peer = server
-    serverDelegate.peer = client
-  }
-}
-
 @Suite struct RPCTests {
 
   @Test func requestResponse() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in await req.reply(req.data) }
+    pair.serverSide.onRequest = { req in try await req.reply(req.data) }
 
     let payload = Data([1, 2, 3])
     let response = try await pair.client.request(42, data: payload)
@@ -80,14 +18,14 @@ final class RPCPair {
   /// decodes as an empty buffer - the wire cannot tell the two apart.
   @Test func requestWithNilResponse() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in await req.reply(nil) }
+    pair.serverSide.onRequest = { req in try await req.reply(nil) }
     let response = try await pair.client.request(1, data: nil)
     #expect(response == Data())
   }
 
   @Test func requestRejection() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in await req.reject("Oops", code: "ERR", errno: -2) }
+    pair.serverSide.onRequest = { req in try await req.reject("Oops", code: "ERR", errno: -2) }
 
     do {
       _ = try await pair.client.request(1, data: nil)
@@ -99,16 +37,46 @@ final class RPCPair {
     }
   }
 
+  @Test func throwingRequestHandlerRejectsTheRequest() async throws {
+    struct Boom: Error, CustomStringConvertible {
+      var description: String { "boom" }
+    }
+
+    let pair = RPCPair()
+    pair.serverSide.onRequest = { req in
+      if req.command == 1 { throw RPCRemoteError(message: "nope", code: "NO", errno: 4) }
+      throw Boom()
+    }
+
+    do {
+      _ = try await pair.client.request(1, data: nil)
+      Issue.record("Expected error")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "nope")
+      #expect(err.code == "NO")
+      #expect(err.errno == 4)
+    }
+
+    do {
+      _ = try await pair.client.request(2, data: nil)
+      Issue.record("Expected error")
+    } catch let err as RPCRemoteError {
+      #expect(err.message == "boom")
+      #expect(err.code == "")
+      #expect(err.errno == 0)
+    }
+  }
+
   @Test func event() async throws {
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.serverDelegate.onEvent = { event in
+      pair.serverSide.onEvent = { event in
         #expect(event.command == 7)
         #expect(event.data == Data([0xBE, 0xEF]))
         confirm()
       }
-      pair.serverDelegate.onRequest = { _ in
+      pair.serverSide.onRequest = { _ in
         Issue.record("Events should not trigger onRequest")
       }
 
@@ -127,7 +95,7 @@ final class RPCPair {
     await pair.server.receive(Data(frame[0..<mid]))
 
     try await confirmation { confirm in
-      pair.serverDelegate.onRequest = { req in
+      pair.serverSide.onRequest = { req in
         #expect(req.data == payload)
         confirm()
       }
@@ -137,8 +105,8 @@ final class RPCPair {
   }
 
   @Test func multipleFramesInSingleReceive() async throws {
-    let captureDelegate = CaptureDelegate()
-    let server = RPC(delegate: captureDelegate)
+    let capture = Capture()
+    let server = capture.rpc()
 
     let frame1 = Messages.encodeRequest(id: 0, command: 1, data: Data([1]))
     let frame2 = Messages.encodeRequest(id: 0, command: 2, data: Data([2]))
@@ -147,29 +115,26 @@ final class RPCPair {
     combined.append(frame1)
     combined.append(frame2)
 
-    var commands: [UInt] = []
-    let lock = NSLock()
+    let commands = Locked<[UInt]>([])
 
     try await confirmation(expectedCount: 2) { confirm in
-      captureDelegate.onEvent = { event in
-        lock.withLock { commands.append(event.command) }
+      capture.onEvent = { event in
+        commands.append(event.command)
         confirm()
       }
       await server.receive(combined)
       try await Task.sleep(nanoseconds: 100_000_000)
     }
 
-    lock.withLock {
-      #expect(commands.sorted() == [1, 2])
-    }
+    #expect(commands.value.sorted() == [1, 2])
   }
 
   @Test func streamingRequestDeliveredWithStream() async throws {
     let pair = RPCPair()
 
     try await confirmation { confirm in
-      pair.serverDelegate.onRequest = { req in
-        #expect(req.requestStream != nil)
+      pair.serverSide.onRequest = { req in
+        #expect(req.isStreamed)
         #expect(req.command == 1)
         confirm()
       }
@@ -179,62 +144,70 @@ final class RPCPair {
     }
   }
 
-  @Test func streamingEventSilentlyDiscarded() async throws {
+  @Test func streamingEventFailsTheConnection() async throws {
     var body = Data()
     body.append(1)  // type = 1 (request)
     body.append(0)  // id = 0 (event)
     body.append(1)  // command = 1
     body.append(1)  // stream = 1 (non-zero, no data field on wire)
 
-    let captureDelegate = CaptureDelegate()
-    let lock = NSLock()
-    var sentAnything = false
-    captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
+    let capture = Capture()
 
-    let server = RPC(delegate: captureDelegate)
-    captureDelegate.onEvent = { _ in
-      Issue.record("Streaming events should be silently discarded")
+    var captured: Error?
+    capture.onError = { captured = $0 }
+
+    let server = capture.rpc()
+    capture.onEvent = { _ in
+      Issue.record("Streaming events should not be delivered")
     }
     await server.receive(makeRawFrame(body))
     try await Task.sleep(nanoseconds: 100_000_000)
 
-    lock.withLock { #expect(sentAnything == false) }
+    #expect(capture.sentFrames.isEmpty)
+    guard case .invalidMessage = captured as? RPCError else {
+      Issue.record("Expected invalidMessage, got \(String(describing: captured))")
+      return
+    }
   }
 
-  @Test func unknownMessageTypeDiscarded() async throws {
-    let captureDelegate = CaptureDelegate()
-    let lock = NSLock()
-    var sentAnything = false
-    captureDelegate.onSend = { _ in lock.withLock { sentAnything = true } }
+  @Test func unknownMessageTypeFailsTheConnection() async throws {
+    let capture = Capture()
 
-    let server = RPC(delegate: captureDelegate)
-    captureDelegate.onRequest = { _ in
+    var captured: Error?
+    capture.onError = { captured = $0 }
+
+    let server = capture.rpc()
+    capture.onRequest = { _ in
       Issue.record("Should not receive unknown type as request")
     }
     await server.receive(makeRawFrame(Data([99])))
     try await Task.sleep(nanoseconds: 100_000_000)
 
-    lock.withLock { #expect(sentAnything == false) }
+    #expect(capture.sentFrames.isEmpty)
+    guard case .invalidMessage = captured as? RPCError else {
+      Issue.record("Expected invalidMessage, got \(String(describing: captured))")
+      return
+    }
   }
 
   @Test func malformedFrameTriggersOnError() async throws {
-    let captureDelegate = CaptureDelegate()
-    let server = RPC(delegate: captureDelegate)
+    let capture = Capture()
+    let server = capture.rpc()
 
     var body = Data()
     body.append(1)  // type = 1 (request)
-    body.append(0xFE)  // start of a varint that needs more bytes — truncated
+    body.append(0xFE)  // start of a varint that needs more bytes - truncated
 
     try await confirmation { confirm in
-      captureDelegate.onError = { _ in confirm() }
+      capture.onError = { _ in confirm() }
       await server.receive(makeRawFrame(body))
       try await Task.sleep(nanoseconds: 100_000_000)
     }
   }
 
   @Test func malformedFramePoisonsConnection() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate)
+    let capture = Capture()
+    let rpc = capture.rpc()
 
     async let response: Data? = rpc.request(1, data: nil)
     // Let the request register its continuation before we feed the bad frame.
@@ -242,7 +215,7 @@ final class RPCPair {
 
     var body = Data()
     body.append(1)  // type = 1 (request)
-    body.append(0xFE)  // truncated varint — decode will throw
+    body.append(0xFE)  // truncated varint - decode will throw
     await rpc.receive(makeRawFrame(body))
 
     do {
@@ -261,13 +234,13 @@ final class RPCPair {
   }
 
   @Test func oversizedFrameTriggersFailWithRPCError() async throws {
-    let captureDelegate = CaptureDelegate()
+    let capture = Capture()
     var captured: Error?
-    captureDelegate.onError = { captured = $0 }
+    capture.onError = { captured = $0 }
 
-    let server = RPC(delegate: captureDelegate, maxFrameSize: 100)
+    let server = capture.rpc(maxFrameSize: 100)
 
-    // Forge a 4-byte header claiming a 200-byte body — exceeds the 100-byte cap.
+    // Forge a 4-byte header claiming a 200-byte body - exceeds the 100-byte cap.
     let header = makeRawHeader(claimingBodyLen: 200)
     await server.receive(header)
 
@@ -281,8 +254,8 @@ final class RPCPair {
   }
 
   @Test func failDrainsPendingRequest() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 100)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 100)
 
     async let response: Data? = rpc.request(1, data: nil)
     // Let the request register its continuation before we poison the connection.
@@ -305,8 +278,8 @@ final class RPCPair {
   }
 
   @Test func failDrainsPendingResponseStream() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 100)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 100)
 
     async let stream: IncomingStream = rpc.requestWithResponseStream(command: 1)
     // Let the continuation register before we poison the connection.
@@ -327,16 +300,169 @@ final class RPCPair {
     }
   }
 
+  @Test func failFailsOpenIncomingStreams() async throws {
+    let pair = RPCPair()
+    pair.serverSide.onRequest = { req in
+      _ = try await req.createResponseStream()
+    }
+
+    let incoming = try await pair.client.requestWithResponseStream(command: 1)
+
+    let reading = Task {
+      for try await _ in incoming {}
+    }
+
+    await pair.client.receive(makeRawHeader(claimingBodyLen: UInt32(RPC.defaultMaxFrameSize)))
+
+    do {
+      try await reading.value
+      Issue.record("Expected frameTooLarge")
+    } catch let err as RPCError {
+      guard case .frameTooLarge = err else {
+        Issue.record("Expected frameTooLarge, got \(err)")
+        return
+      }
+    }
+  }
+
+  @Test func failDestroysOpenOutgoingStreamsAndFailsCorkedWriters() async throws {
+    let pair = RPCPair()
+    pair.serverSide.onRequest = { req in
+      _ = try await req.createRequestStream()
+      while true { try await Task.sleep(nanoseconds: 1_000_000_000) }
+    }
+
+    let outgoing = try await pair.client.createRequestStream(command: 1)
+
+    try await outgoing.write(Data(count: IncomingStream.defaultHighWaterMark))
+
+    while await !outgoing.isCorked {
+      try await Task.sleep(nanoseconds: 5_000_000)
+    }
+
+    let writing = Task { try await outgoing.write(Data([0])) }
+
+    await pair.client.receive(makeRawHeader(claimingBodyLen: UInt32(RPC.defaultMaxFrameSize)))
+
+    let tooLarge = RPCError.frameTooLarge(
+      size: 4 + RPC.defaultMaxFrameSize, limit: RPC.defaultMaxFrameSize)
+    await #expect(throws: tooLarge) { try await writing.value }
+    await #expect(throws: tooLarge) { try await outgoing.write(Data([1])) }
+    #expect(await outgoing.isEnded)
+  }
+
+  @Test func theEndOfTheTransportFailsPendingRequestsWithChannelClosed() async throws {
+    let capture = Capture()
+    var errors: [Error] = []
+    var events = 0
+    capture.onError = { errors.append($0) }
+    capture.onEvent = { _ in events += 1 }
+    let rpc = capture.rpc()
+
+    async let response: Data? = rpc.request(1, data: nil)
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    await capture.input.finish()
+
+    do {
+      _ = try await response
+      Issue.record("Expected channelClosed")
+    } catch let err as RPCError {
+      guard case .channelClosed = err else {
+        Issue.record("Expected channelClosed, got \(err)")
+        return
+      }
+    }
+
+    await rpc.receive(Messages.encodeEvent(command: 1, data: nil))
+    await rpc.close()
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    #expect(errors.count == 1)
+    #expect(events == 0)
+    try await rpc.wait()
+  }
+
+  @Test func aTransportErrorFailsTheSessionWithIt() async throws {
+    struct Gone: Error {}
+
+    let capture = Capture()
+    let rpc = capture.rpc()
+
+    async let response: Data? = rpc.request(1, data: nil)
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    await capture.input.finish(throwing: Gone())
+
+    do {
+      _ = try await response
+      Issue.record("Expected Gone")
+    } catch {
+      #expect(error is Gone)
+    }
+    await #expect(throws: Gone.self) { try await rpc.wait() }
+  }
+
+  @Test func aTransportThatEndsInAFrameFailsWithInvalidMessage() async throws {
+    let capture = Capture()
+    var captured: Error?
+    capture.onError = { captured = $0 }
+    let rpc = capture.rpc()
+
+    let frame = Messages.encodeEvent(command: 1, data: Data([1, 2, 3]))
+    await rpc.receive(Data(frame.prefix(frame.count - 1)))
+    await capture.input.finish()
+
+    guard case .invalidMessage = captured as? RPCError else {
+      Issue.record("Expected invalidMessage, got \(String(describing: captured))")
+      return
+    }
+  }
+
+  @Test func aTransportThatThrowsInAFrameFailsWithItsError() async throws {
+    let capture = Capture()
+    let rpc = capture.rpc()
+
+    let frame = Messages.encodeEvent(command: 1, data: Data([1, 2, 3]))
+    await rpc.receive(Data(frame.prefix(frame.count - 1)))
+    await capture.input.finish(throwing: POSIXError(.ECONNRESET))
+
+    await #expect(throws: POSIXError(.ECONNRESET)) { try await rpc.wait() }
+  }
+
+  @Test func closeFailsOpenIncomingStreamsAndEndsOutgoingStreams() async throws {
+    let pair = RPCPair()
+    pair.serverSide.onRequest = { req in
+      if try await req.createRequestStream() == nil { _ = try await req.createResponseStream() }
+    }
+
+    let incoming = try await pair.client.requestWithResponseStream(command: 1)
+    let outgoing = try await pair.client.createRequestStream(command: 2)
+
+    await pair.client.close()
+
+    do {
+      for try await _ in incoming {}
+      Issue.record("Expected channelClosed")
+    } catch let err as RPCError {
+      guard case .channelClosed = err else {
+        Issue.record("Expected channelClosed, got \(err)")
+        return
+      }
+    }
+    #expect(await outgoing.isEnded)
+  }
+
   @Test func frameAtExactlyMaxFrameSizeIsAccepted() async throws {
     let frame = Messages.encodeEvent(command: 1, data: Data([1, 2, 3]))
 
-    let captureDelegate = CaptureDelegate()
+    let capture = Capture()
     var errors: [Error] = []
     var dispatched = false
-    captureDelegate.onError = { errors.append($0) }
-    captureDelegate.onEvent = { _ in dispatched = true }
+    capture.onError = { errors.append($0) }
+    capture.onEvent = { _ in dispatched = true }
 
-    let server = RPC(delegate: captureDelegate, maxFrameSize: frame.count)
+    let server = capture.rpc(maxFrameSize: frame.count)
     await server.receive(frame)
     try await Task.sleep(nanoseconds: 100_000_000)
 
@@ -345,13 +471,13 @@ final class RPCPair {
   }
 
   @Test func validFramesAheadOfOversizedFrameStillDispatch() async throws {
-    let captureDelegate = CaptureDelegate()
+    let capture = Capture()
     var dispatchedCommand: UInt?
     var captured: Error?
-    captureDelegate.onEvent = { dispatchedCommand = $0.command }
-    captureDelegate.onError = { captured = $0 }
+    capture.onEvent = { dispatchedCommand = $0.command }
+    capture.onError = { captured = $0 }
 
-    let server = RPC(delegate: captureDelegate, maxFrameSize: 100)
+    let server = capture.rpc(maxFrameSize: 100)
     let valid = Messages.encodeEvent(command: 7, data: Data([1, 2, 3]))
     await server.receive(valid + makeRawHeader(claimingBodyLen: 200))
     try await Task.sleep(nanoseconds: 100_000_000)
@@ -364,24 +490,24 @@ final class RPCPair {
   }
 
   @Test func receiveAfterFailIsNoop() async throws {
-    let captureDelegate = CaptureDelegate()
+    let capture = Capture()
     var errorCount = 0
-    captureDelegate.onError = { _ in errorCount += 1 }
+    capture.onError = { _ in errorCount += 1 }
 
-    let server = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let server = capture.rpc(maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
     await server.receive(header)
     #expect(errorCount == 1)
 
-    // Subsequent receive must be ignored — even a well-formed frame.
+    // Subsequent receive must be ignored - even a well-formed frame.
     await server.receive(makeRawFrame(Data([1, 1, 0, 0])))
     #expect(errorCount == 1)
   }
 
   @Test func requestAfterFailThrowsFailureError() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
     await rpc.receive(header)
@@ -398,8 +524,8 @@ final class RPCPair {
   }
 
   @Test func requestWithResponseStreamAfterFailThrowsFailureError() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
     await rpc.receive(header)
@@ -416,8 +542,8 @@ final class RPCPair {
   }
 
   @Test func createRequestStreamAfterFailThrowsFailureError() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
     await rpc.receive(header)
@@ -433,12 +559,12 @@ final class RPCPair {
     }
   }
 
-  @Test func eventAfterFailIsSilentlyDropped() async throws {
-    let captureDelegate = CaptureDelegate()
+  @Test func eventAfterFailIsDropped() async throws {
+    let capture = Capture()
     var sendCount = 0
-    captureDelegate.onSend = { _ in sendCount += 1 }
+    capture.onSend = { _ in sendCount += 1 }
 
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let rpc = capture.rpc(maxFrameSize: 50)
 
     let header = makeRawHeader(claimingBodyLen: 100)
     await rpc.receive(header)
@@ -449,7 +575,8 @@ final class RPCPair {
 
   @Test func errorErrnoRoundtrip() async throws {
     let pair = RPCPair()
-    pair.serverDelegate.onRequest = { req in await req.reject("fail", code: "ENOENT", errno: 42) }
+    pair.serverSide.onRequest = { req in try await req.reject("fail", code: "ENOENT", errno: 42)
+    }
 
     do {
       _ = try await pair.client.request(1, data: nil)

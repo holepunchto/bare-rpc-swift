@@ -1,124 +1,297 @@
 import CompactEncoding
 import Foundation
 
-public protocol RPCDelegate: AnyObject {
-  func rpc(_ rpc: RPC, send data: Data)
-  func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws
-  func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async
-  func rpc(_ rpc: RPC, didFailWith error: Error)
-}
-
-extension RPCDelegate {
-  public func rpc(_ rpc: RPC, didReceiveRequest request: IncomingRequest) async throws {}
-  public func rpc(_ rpc: RPC, didReceiveEvent event: IncomingEvent) async {}
-  public func rpc(_ rpc: RPC, didFailWith error: Error) {}
-}
-
+/// One end of a bare-rpc session over a ``Transport``.
+///
+/// The session reads the bytes of the peer from the transport and writes its
+/// own frames to it, one at a time and in order. It ends once the transport
+/// finishes, with ``RPCError/channelClosed`` or with
+/// ``RPCError/invalidMessage(_:)`` if it ended in the middle of a frame, once
+/// the transport throws, with that error, or once ``close()`` is called.
+/// Pending requests then throw the error, and open incoming and outgoing
+/// streams fail with it. However the session ends, it then closes the
+/// transport.
 public actor RPC {
+  /// A closure that answers a request of the peer. Throwing before the request
+  /// has been answered rejects it with the error.
+  public typealias RequestHandler = @Sendable (IncomingRequest) async throws -> Void
+  /// A closure that receives an event of the peer. Throwing fails the session.
+  public typealias EventHandler = @Sendable (IncomingEvent) async throws -> Void
+
   public static let defaultMaxFrameSize = 16 * 1024 * 1024
+  public static let defaultMaxBufferedBytes = 16 * 1024 * 1024
 
   public let maxFrameSize: Int
+  public let maxBufferedBytes: Int
 
   private var buffer = Data()
-  private var idCounter: UInt = 1
-  private var pending: [UInt: CheckedContinuation<Data?, Error>] = [:]
-  private var pendingResponseStreams: [UInt: CheckedContinuation<IncomingStream, Error>] = [:]
-  private var pendingStreamResponses: [UInt: AsyncThrowingStream<Data?, Error>.Continuation] = [:]
-  private var incomingStreams: [UInt: IncomingStream] = [:]
-  private var outgoingStreams: [UInt: OutgoingStream] = [:]
+  var idCounter: UInt = 1
+  // How each request of this side expects its answer.
+  private enum Awaiting {
+    case reply(CheckedContinuation<Data?, Error>)
+    case stream(CheckedContinuation<IncomingStream, Error>)
+    case streamedReply(AsyncThrowingStream<Data?, Error>.Continuation)
+
+    func fail(_ error: Error) {
+      switch self {
+      case .reply(let continuation): continuation.resume(throwing: error)
+      case .stream(let continuation): continuation.resume(throwing: error)
+      case .streamedReply(let continuation): continuation.finish(throwing: error)
+      }
+    }
+  }
+
+  private var awaiting: [UInt: Awaiting] = [:]
+  // A request id is only unique to the side that sent the request, so a
+  // stream is told apart by whether it carries a request or a response body.
+  private struct StreamKey: Hashable {
+    let id: UInt
+    let mask: UInt
+  }
+
+  private var incomingStreams: [StreamKey: IncomingStream] = [:]
+  private var outgoingStreams: [StreamKey: OutgoingStream] = [:]
+
+  private var unansweredPeerRequests: Set<UInt> = []
+  private var highestPeerRequestId: UInt = 0
+  // Response streams that the peer opened before this side created them,
+  // which a JS peer does as soon as it reads a reply as a stream.
+  private var earlyResponseOpens: Set<UInt> = []
+  private static let maxEarlyResponseOpens = 1024
   private var failureError: Error?
 
   private var failed: Bool { failureError != nil }
 
-  private func nextId() -> UInt {
-    let id = idCounter
-    idCounter = (idCounter % 0xFFFF_FFFE) + 1
-    return id
-  }
-
-  public weak var delegate: RPCDelegate?
-
-  public init(delegate: RPCDelegate? = nil, maxFrameSize: Int = RPC.defaultMaxFrameSize) {
-    precondition(maxFrameSize > 0, "maxFrameSize must be positive")
-    self.delegate = delegate
-    self.maxFrameSize = maxFrameSize
-  }
-
-  public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
+  // Ids are never reused, so a late frame for a finished request can't be
+  // mistaken for one of a new request.
+  private func nextId() throws -> UInt {
     if let failureError { throw failureError }
-    let id = nextId()
-    let frame = Messages.encodeRequest(id: id, command: command, data: data)
-    return try await withCheckedThrowingContinuation { continuation in
-      pending[id] = continuation
-      delegate?.rpc(self, send: frame)
+    defer { idCounter += 1 }
+    return idCounter
+  }
+
+  private let handler: any Handler
+  private let transport: any Transport
+  // Set once the session has failed with an error other than
+  // `RPCError.channelClosed`, after which queued frames are not written.
+  private var dropsWrites = false
+  private let writes: AsyncStream<(Data, CheckedContinuation<Void, Never>?)>.Continuation
+  private let reading = ReadingTask()
+  private var closeWaiters: [CheckedContinuation<Error, Never>] = []
+  private var transportClosed = false
+  private var transportCloseWaiters: [CheckedContinuation<Void, Never>] = []
+
+  /// Starts a session over `transport` that passes the requests and events of
+  /// the peer to `handler`.
+  ///
+  /// - Parameters:
+  ///   - transport: The transport to the peer. A frame is only written once
+  ///     the one before it has been, so a slow transport holds back the
+  ///     writers. A write that throws fails the session with the error.
+  ///   - handler: Answers the requests and receives the events of the peer.
+  ///   - maxFrameSize: The size of the largest frame accepted from the peer,
+  ///     including its length prefix.
+  ///   - maxBufferedBytes: The most bytes that an incoming stream buffers
+  ///     before they are read. A peer that sends more, as it ignored the
+  ///     request to pause, fails the session with ``RPCError/streamOverflow``.
+  public init(
+    _ transport: some Transport,
+    handler: some Handler,
+    maxFrameSize: Int = RPC.defaultMaxFrameSize,
+    maxBufferedBytes: Int = RPC.defaultMaxBufferedBytes
+  ) {
+    precondition(maxFrameSize > 0, "maxFrameSize must be positive")
+    precondition(maxBufferedBytes > 0, "maxBufferedBytes must be positive")
+    self.maxFrameSize = maxFrameSize
+    self.maxBufferedBytes = maxBufferedBytes
+    self.handler = handler
+    self.transport = transport
+
+    let (frames, writes) = AsyncStream<(Data, CheckedContinuation<Void, Never>?)>.makeStream()
+    self.writes = writes
+
+    Task { [self] in
+      for await (frame, written) in frames {
+        await self.perform(frame)
+        written?.resume()
+      }
+      await transport.close()
+      await self.didCloseTransport()
+    }
+
+    reading.start(Task { [self] in await self.read(transport) })
+  }
+
+  /// Starts a session over `transport` that passes the requests and events of
+  /// the peer to closures.
+  ///
+  /// - Parameters:
+  ///   - transport: The transport to the peer, as for
+  ///     ``init(_:handler:maxFrameSize:maxBufferedBytes:)``.
+  ///   - maxFrameSize: The size of the largest frame accepted from the peer,
+  ///     including its length prefix.
+  ///   - maxBufferedBytes: The most bytes that an incoming stream buffers
+  ///     before they are read, as for
+  ///     ``init(_:handler:maxFrameSize:maxBufferedBytes:)``.
+  ///   - onRequest: Answers each request of the peer. Without it, requests are
+  ///     rejected with the code `UNKNOWN_COMMAND`.
+  ///   - onEvent: Receives each event of the peer. Without it, events are
+  ///     dropped.
+  public init(
+    _ transport: some Transport,
+    maxFrameSize: Int = RPC.defaultMaxFrameSize,
+    maxBufferedBytes: Int = RPC.defaultMaxBufferedBytes,
+    onRequest: RequestHandler? = nil,
+    onEvent: EventHandler? = nil
+  ) {
+    self.init(
+      transport, handler: ClosureHandler(onRequest: onRequest, onEvent: onEvent),
+      maxFrameSize: maxFrameSize, maxBufferedBytes: maxBufferedBytes)
+  }
+
+  /// Ends the session, failing pending requests and open incoming streams
+  /// with ``RPCError/channelClosed``, and stops reading from the transport.
+  /// Once the frames already sent have been written, it closes the transport
+  /// and waits for it to close.
+  public func close() async {
+    await fail(RPCError.channelClosed)
+    if transportClosed { return }
+    await withCheckedContinuation { transportCloseWaiters.append($0) }
+  }
+
+  private func didCloseTransport() {
+    transportClosed = true
+    let waiters = transportCloseWaiters
+    transportCloseWaiters = []
+    for waiter in waiters { waiter.resume() }
+  }
+
+  /// Waits for the session to end.
+  ///
+  /// - Throws: The error that failed the session. Nothing is thrown when the
+  ///   transport ended cleanly or ``close()`` was called.
+  public func wait() async throws {
+    let reason = await closedReason()
+    if case .channelClosed? = reason as? RPCError { return }
+    throw reason
+  }
+
+  func closedReason() async -> Error {
+    if let failureError { return failureError }
+    return await withCheckedContinuation { closeWaiters.append($0) }
+  }
+
+  // The transport is iterated off the actor, as its iterator may not be
+  // isolated to it.
+  private nonisolated func read(_ transport: some Transport) async {
+    do {
+      for try await chunk in transport {
+        guard await receive(chunk) else { return }
+      }
+      await fail(
+        buffer.isEmpty ? RPCError.channelClosed : RPCError.invalidMessage("Truncated frame"))
+    } catch {
+      await fail(error)
     }
   }
 
-  public func event(_ command: UInt, data: Data? = nil) {
-    guard !failed else { return }
-    let frame = Messages.encodeEvent(command: command, data: data)
-    delegate?.rpc(self, send: frame)
+  private func perform(_ frame: Data) async {
+    guard !dropsWrites else { return }
+    do {
+      try await transport.write(frame)
+    } catch {
+      await fail(error)
+    }
   }
 
+  /// Sends a request for `command` and waits for its reply.
+  ///
+  /// - Throws: The ``RPCRemoteError`` that the peer rejected the request with,
+  ///   or the error that ended the session.
+  public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
+    let id = try nextId()
+    let frame = Messages.encodeRequest(id: id, command: command, data: data)
+    return try await withCheckedThrowingContinuation { continuation in
+      awaiting[id] = .reply(continuation)
+      sendData(frame)
+    }
+  }
+
+  /// Sends an event for `command`, which gets no reply, and waits for it to be
+  /// written. Once the session has ended, the event is dropped.
+  public func event(_ command: UInt, data: Data? = nil) async {
+    await sendAndWait(Messages.encodeEvent(command: command, data: data))
+  }
+
+  /// Sends a request for `command` whose body is streamed, and returns the
+  /// stream to write it to. The reply of the peer is not read.
   public func createRequestStream(command: UInt) throws -> OutgoingStream {
-    if let failureError { throw failureError }
-    let id = nextId()
+    let id = try nextId()
     let stream = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
-    registerOutgoingStream(stream, forId: id)
-    // Send OPEN handshake: type=REQUEST with stream=OPEN
+    registerOutgoingStream(stream)
     sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
     return stream
   }
 
+  /// Sends a request for `command` whose body is streamed, and returns the
+  /// stream to write it to along with a closure that waits for the reply.
   public func streamRequest(command: UInt) throws
-    -> (outgoing: OutgoingStream, response: () async throws -> Data?)
+    -> (outgoing: OutgoingStream, response: @Sendable () async throws -> Data?)
   {
-    if let failureError { throw failureError }
-    let id = nextId()
+    let id = try nextId()
     let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
-    registerOutgoingStream(outgoing, forId: id)
+    registerOutgoingStream(outgoing)
 
     var continuation: AsyncThrowingStream<Data?, Error>.Continuation!
     let channel = AsyncThrowingStream<Data?, Error> { continuation = $0 }
-    pendingStreamResponses[id] = continuation
+    awaiting[id] = .streamedReply(continuation)
 
     sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
 
-    let response: () async throws -> Data? = {
+    let received = ReceivedFlag()
+    let response: @Sendable () async throws -> Data? = {
+      if received.set() {
+        throw RPCError.alreadyReceived("Response is already being received")
+      }
       for try await value in channel { return value }
       return nil
     }
     return (outgoing, response)
   }
 
+  /// Sends a request for `command` whose body and reply are both streamed,
+  /// and returns both streams once the peer has opened its reply.
   public func createBidirectionalStream(command: UInt) async throws
     -> (outgoing: OutgoingStream, incoming: IncomingStream)
   {
-    if let failureError { throw failureError }
-    let id = nextId()
+    let id = try nextId()
     let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
-    registerOutgoingStream(outgoing, forId: id)
+    registerOutgoingStream(outgoing)
     let incoming = try await withCheckedThrowingContinuation { continuation in
-      pendingResponseStreams[id] = continuation
+      awaiting[id] = .stream(continuation)
       sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+      sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
     }
     return (outgoing, incoming)
   }
 
+  /// Sends a request for `command` and returns the stream of its reply. A
+  /// plain reply of the peer is read as a stream of at most one chunk.
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {
-    if let failureError { throw failureError }
-    let id = nextId()
+    let id = try nextId()
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
     return try await withCheckedThrowingContinuation { continuation in
-      pendingResponseStreams[id] = continuation
-      delegate?.rpc(self, send: frame)
+      awaiting[id] = .stream(continuation)
+      sendData(frame)
+      sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
     }
   }
 
-  public func receive(_ data: Data) async {
-    guard !failed else { return }
+  // Returns whether the session is still reading.
+  private func receive(_ data: Data) async -> Bool {
+    guard !failed else { return false }
     buffer.append(data)
     var frames: [Data] = []
     var oversizeFrame: (size: Int, limit: Int)?
@@ -138,203 +311,376 @@ public actor RPC {
       await dispatchFrame(frame)
     }
     if let oversizeFrame {
-      fail(RPCError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
+      await fail(RPCError.frameTooLarge(size: oversizeFrame.size, limit: oversizeFrame.limit))
     }
+    return !failed
   }
 
+  // Frames sent while handling a frame of the peer are queued without waiting
+  // for them to be written, so that a transport that only drains as the peer
+  // reads can't stall the reading here.
   func sendData(_ data: Data) {
-    delegate?.rpc(self, send: data)
+    guard !failed else { return }
+    writes.yield((data, nil))
   }
 
-  private func fail(_ error: Error) {
+  func send(_ data: Data, waiting: Bool) async {
+    if waiting { await sendAndWait(data) } else { sendData(data) }
+  }
+
+  func sendAndWait(_ data: Data) async {
+    guard !failed else { return }
+    await withCheckedContinuation { writes.yield((data, $0)) }
+  }
+
+  private func fail(_ error: Error) async {
     guard !failed else { return }
     failureError = error
     buffer.removeAll()
-    let drainedPending = pending
-    pending.removeAll()
-    let drainedStreams = pendingResponseStreams
-    pendingResponseStreams.removeAll()
-    let drainedStreamResponses = pendingStreamResponses
-    pendingStreamResponses.removeAll()
-    for (_, continuation) in drainedPending {
-      continuation.resume(throwing: error)
+    let drainedAwaiting = awaiting.values
+    awaiting.removeAll()
+    let drainedIncoming = incomingStreams.values
+    incomingStreams.removeAll()
+    let drainedOutgoing = outgoingStreams.values
+    outgoingStreams.removeAll()
+    unansweredPeerRequests.removeAll()
+    earlyResponseOpens.removeAll()
+    for answer in drainedAwaiting {
+      answer.fail(error)
     }
-    for (_, continuation) in drainedStreams {
-      continuation.resume(throwing: error)
+    for stream in drainedIncoming {
+      await stream.abort(error)
     }
-    for (_, continuation) in drainedStreamResponses {
-      continuation.finish(throwing: error)
+    for stream in drainedOutgoing {
+      await stream.abort(error)
     }
-    delegate?.rpc(self, didFailWith: error)
+    if case .channelClosed? = error as? RPCError {} else { dropsWrites = true }
+    writes.finish()
+    reading.cancel()
+    let waiters = closeWaiters
+    closeWaiters = []
+    for waiter in waiters { waiter.resume(returning: error) }
   }
 
-  func registerOutgoingStream(_ stream: OutgoingStream, forId id: UInt) {
-    outgoingStreams[id] = stream
+  func registerOutgoingStream(_ stream: OutgoingStream) {
+    outgoingStreams[StreamKey(id: stream.requestId, mask: stream.mask)] = stream
   }
 
-  func removeIncomingStream(forId id: UInt) {
-    incomingStreams.removeValue(forKey: id)
+  func removeIncomingStream(_ stream: IncomingStream) {
+    incomingStreams.removeValue(forKey: StreamKey(id: stream.requestId, mask: stream.mask))
   }
 
-  func removeOutgoingStream(forId id: UInt) {
-    outgoingStreams.removeValue(forKey: id)
-  }
-
-  // Responder receives type=REQUEST with stream=OPEN → create IncomingStream, send ack
-  private func handleRequestStreamOpen(_ req: RequestMessage) {
-    guard req.id != 0 else { return }  // events (id=0) can't have streams
-    let incoming = IncomingStream(requestId: req.id, mask: StreamFlag.request, rpc: self)
-    incomingStreams[req.id] = incoming
-    // Send OPEN ack: type=STREAM with REQUEST|OPEN
-    sendData(Messages.encodeStream(id: req.id, flags: StreamFlag.request | StreamFlag.open))
-    // Deliver to onRequest with the stream attached
-    let incomingRequest = IncomingRequest(
-      id: req.id, command: req.command, data: req.data, rpc: self,
-      requestStream: incoming)
-    Task {
-      guard let delegate = self.delegate else { return }
-      try? await delegate.rpc(self, didReceiveRequest: incomingRequest)
+  func removeOutgoingStream(_ stream: OutgoingStream) {
+    outgoingStreams.removeValue(forKey: StreamKey(id: stream.requestId, mask: stream.mask))
+    if stream.mask == StreamFlag.response {
+      answerPeerRequest(stream.requestId)
     }
   }
 
-  // Initiator receives type=RESPONSE with stream=OPEN → create IncomingStream, resolve pending
-  private func handleResponseStreamOpen(_ resp: ResponseMessage) {
-    // Fail any normal-response continuation that was expecting Data, not a stream
-    if let normalCont = pending.removeValue(forKey: resp.id) {
-      normalCont.resume(
-        throwing: RPCRemoteError(
-          message: "Expected normal response", code: "ERR_UNEXPECTED_STREAM"))
+  /// Returns whether the peer had already opened the response stream.
+  @discardableResult
+  private func answerPeerRequest(_ id: UInt) -> Bool {
+    unansweredPeerRequests.remove(id)
+    return earlyResponseOpens.remove(id) != nil
+  }
+
+  func answer(_ id: UInt, _ frame: Data) async {
+    answerPeerRequest(id)
+    await sendAndWait(frame)
+  }
+
+  func registerResponseStream(_ stream: OutgoingStream, _ frame: Data) async {
+    if let failureError {
+      await stream.abort(failureError)
+      return
     }
-    guard let continuation = pendingResponseStreams.removeValue(forKey: resp.id) else { return }
-    let incoming = IncomingStream(requestId: resp.id, mask: StreamFlag.response, rpc: self)
-    incomingStreams[resp.id] = incoming
-    // Send OPEN ack: type=STREAM with RESPONSE|OPEN
-    sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.open))
-    continuation.resume(returning: incoming)
+    registerOutgoingStream(stream)
+    if answerPeerRequest(stream.requestId) {
+      await stream.acknowledge()
+    }
+    await sendAndWait(frame)
+  }
+
+  func openRequestStream(_ stream: IncomingStream) async {
+    if let failureError {
+      await stream.abort(failureError)
+      return
+    }
+    incomingStreams[StreamKey(id: stream.requestId, mask: StreamFlag.request)] = stream
+    sendData(
+      Messages.encodeStream(id: stream.requestId, flags: StreamFlag.request | StreamFlag.open))
+  }
+
+  // A request from the peer stays live until it has been answered and its
+  // request stream, if any, has finished. Only then may the peer reuse its id.
+  private func isLivePeerRequest(_ id: UInt) -> Bool {
+    unansweredPeerRequests.contains(id)
+      || incomingStreams[StreamKey(id: id, mask: StreamFlag.request)] != nil
+      || outgoingStreams[StreamKey(id: id, mask: StreamFlag.response)] != nil
+  }
+
+  var trackedStateCount: Int {
+    awaiting.count + incomingStreams.count + outgoingStreams.count + unansweredPeerRequests.count
+  }
+
+  var earlyResponseOpenCount: Int { earlyResponseOpens.count }
+
+  private func deliver(_ request: IncomingRequest) async {
+    do {
+      try await handler.handle(request)
+    } catch {
+      await request.fail(error)
+    }
+  }
+
+  private func deliver(_ event: IncomingEvent) async {
+    do {
+      try await handler.handle(event)
+    } catch {
+      await fail(error)
+    }
+  }
+
+  private func handleResponseStreamOpen(_ resp: ResponseMessage) async {
+    switch awaiting[resp.id] {
+    case .reply, .streamedReply:
+      awaiting.removeValue(forKey: resp.id)?.fail(RPCError.unexpectedStream)
+      sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.destroy))
+      await outgoingStreams[StreamKey(id: resp.id, mask: StreamFlag.request)]?.release(
+        error: RPCRemoteError(
+          message: "Request was answered with a stream", code: "UNEXPECTED_STREAM"))
+    case .stream(let continuation):
+      awaiting[resp.id] = nil
+      let incoming = IncomingStream(requestId: resp.id, mask: StreamFlag.response, rpc: self)
+      incomingStreams[StreamKey(id: resp.id, mask: StreamFlag.response)] = incoming
+      continuation.resume(returning: incoming)
+    case nil:
+      return
+    }
   }
 
   private func handleStreamMessage(_ msg: StreamMessage) async {
+    let key = StreamKey(id: msg.id, mask: msg.flags & (StreamFlag.request | StreamFlag.response))
+
     if msg.flags & StreamFlag.open != 0 {
-      // OPEN ack from remote — currently no action needed
+      await handleStreamOpen(msg, key)
       return
     }
 
     if msg.flags & StreamFlag.close != 0 {
       if msg.flags & StreamFlag.error != 0 {
-        if let incoming = incomingStreams.removeValue(forKey: msg.id) {
-          await incoming.destroy(error: msg.error)
-        }
+        await incomingStreams[key]?.destroy(error: msg.error, waiting: false)
       } else {
-        if let incoming = incomingStreams.removeValue(forKey: msg.id) {
-          await incoming.end()
-        }
+        await incomingStreams[key]?.end()
       }
       return
     }
 
     if msg.flags & StreamFlag.pause != 0 {
-      await outgoingStreams[msg.id]?.cork()
+      await outgoingStreams[key]?.cork()
       return
     }
 
     if msg.flags & StreamFlag.resume != 0 {
-      await outgoingStreams[msg.id]?.uncork()
+      await outgoingStreams[key]?.uncork()
       return
     }
 
     if msg.flags & StreamFlag.data != 0 {
-      if let incoming = incomingStreams[msg.id], let data = msg.data {
-        await incoming.push(data)
+      if let incoming = incomingStreams[key], let data = msg.data,
+        await incoming.push(data) > maxBufferedBytes
+      {
+        await fail(RPCError.streamOverflow)
       }
       return
     }
 
     if msg.flags & StreamFlag.end != 0 {
-      if let incoming = incomingStreams[msg.id] {
+      if let incoming = incomingStreams[key] {
         await incoming.end()
       }
       return
     }
 
     if msg.flags & StreamFlag.destroy != 0 {
-      if let outgoing = outgoingStreams[msg.id] {
-        if msg.flags & StreamFlag.error != 0 {
-          await outgoing.destroy(error: msg.error)
-        } else {
-          await outgoing.destroy()
-        }
-      }
+      if key.mask == StreamFlag.response { earlyResponseOpens.remove(msg.id) }
+      await outgoingStreams[key]?.destroy(error: msg.error, waiting: false)
       return
     }
   }
+
+  private func handleStreamOpen(_ msg: StreamMessage, _ key: StreamKey) async {
+    if let outgoing = outgoingStreams[key] {
+      await outgoing.acknowledge()
+      return
+    }
+    guard key.mask == StreamFlag.response, !earlyResponseOpens.contains(msg.id) else { return }
+    // Any other open is for a request that has already been answered.
+    if !unansweredPeerRequests.contains(msg.id) && msg.id <= highestPeerRequestId { return }
+    if earlyResponseOpens.count >= Self.maxEarlyResponseOpens {
+      await fail(RPCError.invalidMessage("Too many response streams opened early"))
+      return
+    }
+    earlyResponseOpens.insert(msg.id)
+  }
+
+  // Frames that a valid peer can never send. Frames that a valid peer can send
+  // because of a race, such as those for an id that has finished, are not
+  // violations and are ignored instead.
+  private func violation(of message: DecodedMessage) -> String? {
+    switch message {
+    case .request(let req):
+      if req.id == 0 && req.stream != 0 { return "Event with a stream" }
+      if req.stream != 0 && req.stream != StreamFlag.open { return "Invalid request stream" }
+      if req.id != 0 && isLivePeerRequest(req.id) { return "Duplicate request id" }
+    case .response(let resp):
+      if resp.id == 0 { return "Response with id 0" }
+      if resp.stream != 0 && resp.stream != StreamFlag.open { return "Invalid response stream" }
+      if case .remoteError = resp.result, resp.stream != 0 { return "Error response with a stream" }
+    case .stream(let msg):
+      if msg.id == 0 { return "Stream message with id 0" }
+      if !Self.validStreamFlags.contains(msg.flags) { return "Invalid stream flags" }
+    }
+    return nil
+  }
+
+  // One direction and one event, with an error only on CLOSE or DESTROY.
+  private static let validStreamFlags: Set<UInt> = {
+    let events = [
+      StreamFlag.open, StreamFlag.close, StreamFlag.pause, StreamFlag.resume, StreamFlag.data,
+      StreamFlag.end, StreamFlag.destroy, StreamFlag.close | StreamFlag.error,
+      StreamFlag.destroy | StreamFlag.error,
+    ]
+    return Set(
+      [StreamFlag.request, StreamFlag.response].flatMap { direction in
+        events.map { direction | $0 }
+      })
+  }()
 
   private func dispatchFrame(_ frame: Data) async {
     let message: DecodedMessage?
     do {
       message = try Messages.decodeFrame(frame)
+    } catch let error as RPCError {
+      await fail(error)
+      return
     } catch {
-      fail(error)
+      await fail(RPCError.invalidMessage("Malformed frame"))
       return
     }
 
     guard let message else { return }
 
+    if let violation = violation(of: message) {
+      await fail(RPCError.invalidMessage(violation))
+      return
+    }
+
     switch message {
+    case .request(let req) where req.id == 0:
+      Task { await deliver(IncomingEvent(command: req.command, data: req.data)) }
     case .request(let req):
-      if req.stream == StreamFlag.open {
-        handleRequestStreamOpen(req)
-      } else {
-        Task {
-          guard let delegate = self.delegate else { return }
-          if req.id == 0 {
-            let event = IncomingEvent(command: req.command, data: req.data)
-            await delegate.rpc(self, didReceiveEvent: event)
-          } else {
-            let incoming = IncomingRequest(
-              id: req.id, command: req.command, data: req.data, rpc: self)
-            try? await delegate.rpc(self, didReceiveRequest: incoming)
-          }
-        }
-      }
+      unansweredPeerRequests.insert(req.id)
+      highestPeerRequestId = max(highestPeerRequestId, req.id)
+      // The request stream is only opened, and the OPEN acked, once the
+      // handler reads it. Until then its frames are dropped, as in JS.
+      let body =
+        req.stream == StreamFlag.open
+        ? IncomingStream(requestId: req.id, mask: StreamFlag.request, rpc: self) : nil
+      let request = IncomingRequest(
+        id: req.id, command: req.command, data: req.data, rpc: self, requestStream: body)
+      Task { await deliver(request) }
     case .stream(let s):
       await handleStreamMessage(s)
+    case .response(let resp) where resp.stream == StreamFlag.open:
+      await handleResponseStreamOpen(resp)
     case .response(let resp):
-      if resp.stream == StreamFlag.open {
-        handleResponseStreamOpen(resp)
-      } else {
-        if let cont = pendingStreamResponses.removeValue(forKey: resp.id) {
-          switch resp.result {
-          case .success(let data):
-            cont.yield(data)
-            cont.finish()
-          case .remoteError(let msg, let code, let errno):
-            cont.finish(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
-          }
-          return
+      switch awaiting.removeValue(forKey: resp.id) {
+      case .reply(let continuation):
+        switch resp.result {
+        case .success(let data): continuation.resume(returning: data)
+        case .remoteError(let error): continuation.resume(throwing: error)
         }
-        // Client expected a response stream but got a normal response.
-        // Propagate a remote error verbatim; a plain success means the peer
-        // never opened the stream we asked for.
-        if let streamCont = pendingResponseStreams.removeValue(forKey: resp.id) {
-          switch resp.result {
-          case .remoteError(let msg, let code, let errno):
-            streamCont.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
-          case .success:
-            streamCont.resume(
-              throwing: RPCRemoteError(
-                message: "Expected stream response", code: "ERR_NOT_STREAM"))
-          }
-          return
+      case .streamedReply(let continuation):
+        let error: RPCRemoteError?
+        switch resp.result {
+        case .success(let data):
+          error = nil
+          continuation.yield(data)
+          continuation.finish()
+        case .remoteError(let remoteError):
+          error = remoteError
+          continuation.finish(throwing: remoteError)
         }
-        if let continuation = pending.removeValue(forKey: resp.id) {
-          switch resp.result {
-          case .success(let data):
-            continuation.resume(returning: data)
-          case .remoteError(let msg, let code, let errno):
-            continuation.resume(throwing: RPCRemoteError(message: msg, code: code, errno: errno))
-          }
+        await outgoingStreams[StreamKey(id: resp.id, mask: StreamFlag.request)]?.release(
+          error: error)
+      // A plain reply to a request whose reply is read as a stream is
+      // delivered as a stream of at most one chunk.
+      case .stream(let continuation):
+        switch resp.result {
+        case .success(let data):
+          let incoming = IncomingStream(requestId: resp.id, mask: StreamFlag.response, rpc: self)
+          if let data, !data.isEmpty { await incoming.push(data) }
+          await incoming.end()
+          continuation.resume(returning: incoming)
+        case .remoteError(let error):
+          continuation.resume(throwing: error)
         }
+      case nil:
+        return
       }
     }
+  }
+}
+
+private struct ClosureHandler: Handler {
+  let onRequest: RPC.RequestHandler?
+  let onEvent: RPC.EventHandler?
+
+  func handle(_ request: IncomingRequest) async throws {
+    guard let onRequest else { return try await request.rejectUnknownCommand() }
+    try await onRequest(request)
+  }
+
+  func handle(_ event: IncomingEvent) async throws {
+    try await onEvent?(event)
+  }
+}
+
+private final class ReceivedFlag: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = false
+
+  /// Sets the flag and returns whether it was already set.
+  func set() -> Bool {
+    lock.withLock {
+      defer { value = true }
+      return value
+    }
+  }
+}
+
+// Holds the task that reads the transport, so that the nonisolated init can
+// start it and a later failure can cancel it.
+private final class ReadingTask: @unchecked Sendable {
+  private let lock = NSLock()
+  private var task: Task<Void, Never>?
+  private var cancelled = false
+
+  func start(_ task: Task<Void, Never>) {
+    let cancelled = lock.withLock {
+      self.task = task
+      return self.cancelled
+    }
+    if cancelled { task.cancel() }
+  }
+
+  func cancel() {
+    let task = lock.withLock {
+      cancelled = true
+      defer { self.task = nil }
+      return self.task
+    }
+    task?.cancel()
   }
 }

@@ -6,38 +6,34 @@ import Testing
 @Suite struct CommandRouterTests {
 
   @Test func routesRequestToRegisteredHandler() async throws {
-    let pair = RPCPair()
     let router = CommandRouter()
     router.on(request: 7) { req in
       #expect(req.command == 7)
       return Data([0xAA]) + (req.data ?? Data())
     }
-    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+    let pair = RPCPair(serverHandler: router)
 
     let response = try await pair.client.request(7, data: Data([0x01]))
     #expect(response == Data([0xAA, 0x01]))
   }
 
   @Test func unknownRequestCommandRejects() async throws {
-    let pair = RPCPair()
-    let router = CommandRouter()
-    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+    let pair = RPCPair(serverHandler: CommandRouter())
 
     do {
       _ = try await pair.client.request(99, data: nil)
       Issue.record("Expected rejection")
     } catch let err as RPCRemoteError {
-      #expect(err.code == "ERR_UNKNOWN_COMMAND")
+      #expect(err.code == "UNKNOWN_COMMAND")
     }
   }
 
   @Test func handlerThrowingRPCRemoteErrorPropagates() async throws {
-    let pair = RPCPair()
     let router = CommandRouter()
     router.on(request: 1) { _ in
       throw RPCRemoteError(message: "nope", code: "EBAD", errno: -7)
     }
-    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+    let pair = RPCPair(serverHandler: router)
 
     do {
       _ = try await pair.client.request(1, data: nil)
@@ -50,30 +46,32 @@ import Testing
   }
 
   @Test func handlerThrowingGenericErrorRejects() async throws {
-    struct Boom: Error {}
-    let pair = RPCPair()
+    struct Boom: Error, CustomStringConvertible {
+      var description: String { "boom" }
+    }
     let router = CommandRouter()
     router.on(request: 2) { _ in throw Boom() }
-    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+    let pair = RPCPair(serverHandler: router)
 
     do {
       _ = try await pair.client.request(2, data: nil)
       Issue.record("Expected rejection")
     } catch let err as RPCRemoteError {
-      #expect(err.code == "ERROR")
+      #expect(err.message == "boom")
+      #expect(err.code == "")
+      #expect(err.errno == 0)
     }
   }
 
   @Test func routesEventToRegisteredHandler() async throws {
-    let pair = RPCPair()
     let router = CommandRouter()
+    let pair = RPCPair(serverHandler: router)
 
     try await confirmation { confirm in
       router.on(event: 5) { event in
         #expect(event.data == Data([0xBE]))
         confirm()
       }
-      pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
 
       await pair.client.event(5, data: Data([0xBE]))
       try await Task.sleep(nanoseconds: 50_000_000)
@@ -92,11 +90,9 @@ import Testing
       }
     }
 
-    let pair = RPCPair()
     try await confirmation { confirm in
       let captor = Captor(confirm: confirm)
-      let router = CommandRouter(delegate: captor)
-      pair.serverDelegate.onEvent = { event in await router.dispatch(event) }
+      let pair = RPCPair(serverHandler: CommandRouter(delegate: captor))
 
       await pair.client.event(123, data: nil)
       try await Task.sleep(nanoseconds: 50_000_000)
@@ -107,15 +103,13 @@ import Testing
     final class CustomReject: CommandRouterDelegate {
       func commandRouter(
         _ router: CommandRouter, didReceiveUnknownRequest request: IncomingRequest
-      ) async {
-        await request.reject("custom miss", code: "ENOENT", errno: 2)
+      ) async throws {
+        try await request.reject("custom miss", code: "ENOENT", errno: 2)
       }
     }
 
-    let pair = RPCPair()
     let delegate = CustomReject()
-    let router = CommandRouter(delegate: delegate)
-    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+    let pair = RPCPair(serverHandler: CommandRouter(delegate: delegate))
 
     do {
       _ = try await pair.client.request(99, data: nil)
@@ -128,24 +122,22 @@ import Testing
   }
 
   @Test func unknownRequestWithDefaultDelegateStillRejects() async throws {
-    // Delegate set but doesn't override the unknown-request method — protocol
-    // extension default should still produce ERR_UNKNOWN_COMMAND.
+    // Delegate set but doesn't override the unknown-request method - protocol
+    // extension default should still produce UNKNOWN_COMMAND.
     final class EmptyDelegate: CommandRouterDelegate {}
 
-    let pair = RPCPair()
-    let router = CommandRouter(delegate: EmptyDelegate())
-    pair.serverDelegate.onRequest = { req in await router.dispatch(req) }
+    let pair = RPCPair(serverHandler: CommandRouter(delegate: EmptyDelegate()))
 
     do {
       _ = try await pair.client.request(99, data: nil)
       Issue.record("Expected rejection")
     } catch let err as RPCRemoteError {
-      #expect(err.code == "ERR_UNKNOWN_COMMAND")
+      #expect(err.code == "UNKNOWN_COMMAND")
     }
   }
 
   @Test func unknownEventWithDefaultDelegateIsNoop() async throws {
-    // Delegate set but doesn't override didReceiveUnknownEvent — protocol
+    // Delegate set but doesn't override didReceiveUnknownEvent - protocol
     // extension default is a silent no-op.
     final class EmptyDelegate: CommandRouterDelegate {}
 
@@ -153,8 +145,8 @@ import Testing
     let router = CommandRouter(delegate: EmptyDelegate())
 
     try await confirmation { confirm in
-      pair.serverDelegate.onEvent = { event in
-        await router.dispatch(event)
+      pair.serverSide.onEvent = { event in
+        try await router.handle(event)
         confirm()
       }
       await pair.client.event(99, data: nil)

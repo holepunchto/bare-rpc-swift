@@ -1,6 +1,7 @@
 import Foundation
 
-public struct IncomingEvent {
+/// An event of the peer, which gets no reply.
+public struct IncomingEvent: Sendable {
   public let command: UInt
   public let data: Data?
 }

@@ -9,8 +9,8 @@ import Testing
   @Test func streamRequestWithScalarReply() async throws {
     let pair = RPCPair()
 
-    pair.serverDelegate.onRequest = { req in
-      guard let requestStream = req.requestStream else {
+    pair.serverSide.onRequest = { req in
+      guard let requestStream = try await req.createRequestStream() else {
         Issue.record("Expected request stream")
         return
       }
@@ -19,24 +19,24 @@ import Testing
         chunks.append(chunk)
       }
       let combined = chunks.reduce(Data(), +)
-      await req.reply(combined)
+      try await req.reply(combined)
     }
 
     let (outgoing, response) = try await pair.client.streamRequest(command: 5)
-    await outgoing.write(Data([1, 2, 3]))
-    await outgoing.write(Data([4, 5]))
+    try await outgoing.write(Data([1, 2, 3]))
+    try await outgoing.write(Data([4, 5]))
     await outgoing.end()
 
     #expect(try await response() == Data([1, 2, 3, 4, 5]))
   }
 
-  // Server rejects — response() throws RPCRemoteError.
+  // Server rejects - response() throws RPCRemoteError.
   @Test func streamRequestServerReject() async throws {
     let pair = RPCPair()
 
-    pair.serverDelegate.onRequest = { req in
-      guard req.requestStream != nil else { return }
-      await req.reject("bad input", code: "ERR_BAD", errno: 0)
+    pair.serverSide.onRequest = { req in
+      guard try await req.createRequestStream() != nil else { return }
+      try await req.reject("bad input", code: "ERR_BAD", errno: 0)
     }
 
     let (outgoing, response) = try await pair.client.streamRequest(command: 1)
@@ -51,13 +51,13 @@ import Testing
     }
   }
 
-  // Server replies with nil — response() returns nil.
+  // Server replies with nil - response() returns nil.
   @Test func streamRequestNilReply() async throws {
     let pair = RPCPair()
 
-    pair.serverDelegate.onRequest = { req in
-      guard req.requestStream != nil else { return }
-      await req.reply(nil)
+    pair.serverSide.onRequest = { req in
+      guard try await req.createRequestStream() != nil else { return }
+      try await req.reply(nil)
     }
 
     let (outgoing, response) = try await pair.client.streamRequest(command: 1)
@@ -68,8 +68,8 @@ import Testing
 
   // Connection failure before reply drains the pending continuation.
   @Test func failDrainsPendingStreamRequest() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 100)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 100)
 
     let (_, response) = try await rpc.streamRequest(command: 1)
     try await Task.sleep(nanoseconds: 100_000_000)
@@ -91,8 +91,8 @@ import Testing
 
   // Calling streamRequest after fail throws immediately.
   @Test func streamRequestAfterFailThrows() async throws {
-    let captureDelegate = CaptureDelegate()
-    let rpc = RPC(delegate: captureDelegate, maxFrameSize: 50)
+    let capture = Capture()
+    let rpc = capture.rpc(maxFrameSize: 50)
 
     await rpc.receive(makeRawHeader(claimingBodyLen: 100))
 

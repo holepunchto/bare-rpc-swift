@@ -45,4 +45,7 @@ public enum RPCError: Error, Sendable, Equatable {
   /// The peer sent more data on an incoming stream than `maxBufferedBytes`
   /// without it being read, as it ignored the request to pause.
   case streamOverflow
+  /// The peer did not answer the request within its timeout. The request is
+  /// cancelled.
+  case timeout
 }

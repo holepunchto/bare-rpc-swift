@@ -5,6 +5,7 @@ enum DecodedMessage {
   case request(RequestMessage)
   case response(ResponseMessage)
   case stream(StreamMessage)
+  case cancel(CancelMessage)
 }
 
 struct RequestMessage {
@@ -19,6 +20,11 @@ struct StreamMessage {
   let flags: UInt
   let data: Data?
   let error: RPCRemoteError?
+}
+
+struct CancelMessage {
+  let id: UInt
+  let error: RPCRemoteError
 }
 
 struct ResponseMessage {
@@ -171,6 +177,32 @@ struct StreamMessageCodec: Codec {
   }
 }
 
+struct CancelMessageCodec: Codec {
+  typealias Value = CancelMessage
+
+  func preencode(_ state: inout State, _ value: CancelMessage) {
+    Primitive.UInt().preencode(&state, value.id)
+    Primitive.UTF8().preencode(&state, value.error.message)
+    Primitive.UTF8().preencode(&state, value.error.code)
+    Primitive.Int().preencode(&state, value.error.errno)
+  }
+
+  func encode(_ state: inout State, _ value: CancelMessage) throws {
+    try Primitive.UInt().encode(&state, value.id)
+    try Primitive.UTF8().encode(&state, value.error.message)
+    try Primitive.UTF8().encode(&state, value.error.code)
+    try Primitive.Int().encode(&state, value.error.errno)
+  }
+
+  func decode(_ state: inout State) throws -> CancelMessage {
+    let id = try Primitive.UInt().decode(&state)
+    let message = try StrictDecode.utf8(&state)
+    let code = try StrictDecode.utf8(&state)
+    let errno = try Primitive.Int().decode(&state)
+    return CancelMessage(id: id, error: RPCRemoteError(message: message, code: code, errno: errno))
+  }
+}
+
 struct DecodedMessageCodec: Codec {
   typealias Value = DecodedMessage
 
@@ -185,6 +217,9 @@ struct DecodedMessageCodec: Codec {
     case .stream(let s):
       Primitive.UInt().preencode(&state, 3)
       StreamMessageCodec().preencode(&state, s)
+    case .cancel(let c):
+      Primitive.UInt().preencode(&state, 4)
+      CancelMessageCodec().preencode(&state, c)
     }
   }
 
@@ -199,6 +234,9 @@ struct DecodedMessageCodec: Codec {
     case .stream(let s):
       try Primitive.UInt().encode(&state, 3 as UInt)
       try StreamMessageCodec().encode(&state, s)
+    case .cancel(let c):
+      try Primitive.UInt().encode(&state, 4 as UInt)
+      try CancelMessageCodec().encode(&state, c)
     }
   }
 
@@ -208,6 +246,7 @@ struct DecodedMessageCodec: Codec {
     case 1: return .request(try RequestMessageCodec().decode(&state))
     case 2: return .response(try ResponseMessageCodec().decode(&state))
     case 3: return .stream(try StreamMessageCodec().decode(&state))
+    case 4: return .cancel(try CancelMessageCodec().decode(&state))
     default:
       // The id is read first, as in JS, so a frame that ends before it is
       // malformed rather than of an unknown type.
@@ -278,6 +317,10 @@ enum Messages {
     id: UInt, flags: UInt, data: Data? = nil, error: RPCRemoteError? = nil
   ) -> Data {
     encodeFrame(.stream(StreamMessage(id: id, flags: flags, data: data, error: error)))
+  }
+
+  static func encodeCancel(id: UInt, error: RPCRemoteError) -> Data {
+    encodeFrame(.cancel(CancelMessage(id: id, error: error)))
   }
 
   static func decodeFrame(_ frame: Data) throws -> DecodedMessage? {

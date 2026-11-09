@@ -52,7 +52,10 @@ public actor RPC {
   private var incomingStreams: [StreamKey: IncomingStream] = [:]
   private var outgoingStreams: [StreamKey: OutgoingStream] = [:]
 
-  private var unansweredPeerRequests: Set<UInt> = []
+  private var unansweredPeerRequests: [UInt: IncomingRequest] = [:]
+  // The task of each handler that is still running, which a cancel of the
+  // peer cancels.
+  private var handlerTasks: [UInt: (request: IncomingRequest, task: Task<Void, Never>)] = [:]
   private var highestPeerRequestId: UInt = 0
   // Response streams that the peer opened before this side created them,
   // which a JS peer does as soon as it reads a reply as a stream.
@@ -204,16 +207,28 @@ public actor RPC {
     }
   }
 
-  /// Sends a request for `command` and waits for its reply.
+  /// Sends a request for `command` and waits for its reply. Cancelling the
+  /// task that waits cancels the request, and the peer is told to stop
+  /// handling it.
   ///
+  /// - Parameter timeout: The seconds to wait for the reply before the
+  ///   request is cancelled and ``RPCError/timeout`` is thrown.
   /// - Throws: The ``RPCRemoteError`` that the peer rejected the request with,
-  ///   or the error that ended the session.
-  public func request(_ command: UInt, data: Data? = nil) async throws -> Data? {
+  ///   `CancellationError` if the task was cancelled, ``RPCError/timeout``, or
+  ///   the error that ended the session.
+  public func request(_ command: UInt, data: Data? = nil, timeout: TimeInterval? = nil)
+    async throws -> Data?
+  {
+    try Task.checkCancellation()
     let id = try nextId()
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
-    return try await withCheckedThrowingContinuation { continuation in
-      awaiting[id] = .reply(continuation)
-      sendData(frame)
+    let timer = timeout.map { startTimeout(id, after: $0) }
+    defer { timer?.cancel() }
+    return try await cancellable(id) {
+      try await withCheckedThrowingContinuation { continuation in
+        awaiting[id] = .reply(continuation)
+        sendData(frame)
+      }
     }
   }
 
@@ -235,6 +250,7 @@ public actor RPC {
 
   /// Sends a request for `command` whose body is streamed, and returns the
   /// stream to write it to along with a closure that waits for the reply.
+  /// Cancelling the task that waits for the reply cancels the request.
   public func streamRequest(command: UInt) throws
     -> (outgoing: OutgoingStream, response: @Sendable () async throws -> Data?)
   {
@@ -249,44 +265,88 @@ public actor RPC {
     sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
 
     let received = ReceivedFlag()
-    let response: @Sendable () async throws -> Data? = {
+    let response: @Sendable () async throws -> Data? = { [weak self] in
       if received.set() {
         throw RPCError.alreadyReceived("Response is already being received")
       }
-      for try await value in channel { return value }
-      return nil
+      return try await withTaskCancellationHandler {
+        for try await value in channel { return value }
+        try Task.checkCancellation()
+        return nil
+      } onCancel: {
+        Task { await self?.cancelRequest(id) }
+      }
     }
     return (outgoing, response)
   }
 
   /// Sends a request for `command` whose body and reply are both streamed,
-  /// and returns both streams once the peer has opened its reply.
+  /// and returns both streams once the peer has opened its reply. Cancelling
+  /// the task that waits cancels the request.
   public func createBidirectionalStream(command: UInt) async throws
     -> (outgoing: OutgoingStream, incoming: IncomingStream)
   {
+    try Task.checkCancellation()
     let id = try nextId()
     let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(outgoing)
-    let incoming = try await withCheckedThrowingContinuation { continuation in
-      awaiting[id] = .stream(continuation)
-      sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
-      sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
+    let incoming = try await cancellable(id) {
+      try await withCheckedThrowingContinuation { continuation in
+        awaiting[id] = .stream(continuation)
+        sendData(
+          Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+        sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
+      }
     }
     return (outgoing, incoming)
   }
 
   /// Sends a request for `command` and returns the stream of its reply. A
   /// plain reply of the peer is read as a stream of at most one chunk.
+  /// Cancelling the task that waits for the stream cancels the request.
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {
+    try Task.checkCancellation()
     let id = try nextId()
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
-    return try await withCheckedThrowingContinuation { continuation in
-      awaiting[id] = .stream(continuation)
-      sendData(frame)
-      sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
+    return try await cancellable(id) {
+      try await withCheckedThrowingContinuation { continuation in
+        awaiting[id] = .stream(continuation)
+        sendData(frame)
+        sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
+      }
     }
+  }
+
+  private static let cancelled = RPCRemoteError(
+    message: "Request was cancelled", code: "CANCELLED")
+  private static let timedOut = RPCRemoteError(message: "Request timed out", code: "TIMEOUT")
+
+  private func cancellable<T>(_ id: UInt, _ operation: () async throws -> T) async throws -> T {
+    try await withTaskCancellationHandler(operation: operation) {
+      Task { await self.cancelRequest(id) }
+    }
+  }
+
+  private func startTimeout(_ id: UInt, after timeout: TimeInterval) -> Task<Void, Never> {
+    Task {
+      guard (try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))) != nil else {
+        return
+      }
+      await cancelRequest(id, error: RPCError.timeout, reason: Self.timedOut)
+    }
+  }
+
+  // Only a request that still waits for its answer is cancelled.
+  private func cancelRequest(
+    _ id: UInt, error: Error = CancellationError(), reason: RPCRemoteError = RPC.cancelled
+  ) async {
+    guard let answer = awaiting.removeValue(forKey: id) else { return }
+    answer.fail(error)
+    sendData(Messages.encodeCancel(id: id, error: reason))
+    await outgoingStreams.removeValue(forKey: StreamKey(id: id, mask: StreamFlag.request))?.abort(
+      error)
   }
 
   // Returns whether the session is still reading.
@@ -345,6 +405,11 @@ public actor RPC {
     outgoingStreams.removeAll()
     unansweredPeerRequests.removeAll()
     earlyResponseOpens.removeAll()
+    let drainedHandlers = handlerTasks.values
+    handlerTasks.removeAll()
+    for handler in drainedHandlers {
+      handler.task.cancel()
+    }
     for answer in drainedAwaiting {
       answer.fail(error)
     }
@@ -380,18 +445,27 @@ public actor RPC {
   /// Returns whether the peer had already opened the response stream.
   @discardableResult
   private func answerPeerRequest(_ id: UInt) -> Bool {
-    unansweredPeerRequests.remove(id)
+    unansweredPeerRequests.removeValue(forKey: id)
     return earlyResponseOpens.remove(id) != nil
   }
 
+  // A request that the peer has cancelled is no longer unanswered, so its
+  // answer is dropped.
   func answer(_ id: UInt, _ frame: Data) async {
+    guard unansweredPeerRequests[id] != nil else { return }
     answerPeerRequest(id)
     await sendAndWait(frame)
   }
 
-  func registerResponseStream(_ stream: OutgoingStream, _ frame: Data) async {
+  func registerResponseStream(_ stream: OutgoingStream, _ frame: Data, for request: IncomingRequest)
+    async
+  {
     if let failureError {
       await stream.abort(failureError)
+      return
+    }
+    if request.cancellationError != nil {
+      await stream.drop()
       return
     }
     registerOutgoingStream(stream)
@@ -401,9 +475,9 @@ public actor RPC {
     await sendAndWait(frame)
   }
 
-  func openRequestStream(_ stream: IncomingStream) async {
-    if let failureError {
-      await stream.abort(failureError)
+  func openRequestStream(_ stream: IncomingStream, for request: IncomingRequest) async {
+    if let error = failureError ?? request.cancellationError {
+      await stream.abort(error)
       return
     }
     incomingStreams[StreamKey(id: stream.requestId, mask: StreamFlag.request)] = stream
@@ -414,7 +488,7 @@ public actor RPC {
   // A request from the peer stays live until it has been answered and its
   // request stream, if any, has finished. Only then may the peer reuse its id.
   private func isLivePeerRequest(_ id: UInt) -> Bool {
-    unansweredPeerRequests.contains(id)
+    unansweredPeerRequests[id] != nil
       || incomingStreams[StreamKey(id: id, mask: StreamFlag.request)] != nil
       || outgoingStreams[StreamKey(id: id, mask: StreamFlag.response)] != nil
   }
@@ -426,6 +500,11 @@ public actor RPC {
   var earlyResponseOpenCount: Int { earlyResponseOpens.count }
 
   private func deliver(_ request: IncomingRequest) async {
+    defer {
+      if handlerTasks[request.id]?.request === request {
+        handlerTasks.removeValue(forKey: request.id)
+      }
+    }
     do {
       try await handler.handle(request)
     } catch {
@@ -457,6 +536,16 @@ public actor RPC {
     case nil:
       return
     }
+  }
+
+  private func handleCancel(_ msg: CancelMessage) async {
+    unansweredPeerRequests[msg.id]?.cancel(msg.error)
+    answerPeerRequest(msg.id)
+    handlerTasks[msg.id]?.task.cancel()
+    await incomingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.request))?
+      .abort(msg.error)
+    await outgoingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.response))?
+      .drop()
   }
 
   private func handleStreamMessage(_ msg: StreamMessage) async {
@@ -516,7 +605,7 @@ public actor RPC {
     }
     guard key.mask == StreamFlag.response, !earlyResponseOpens.contains(msg.id) else { return }
     // Any other open is for a request that has already been answered.
-    if !unansweredPeerRequests.contains(msg.id) && msg.id <= highestPeerRequestId { return }
+    if unansweredPeerRequests[msg.id] == nil && msg.id <= highestPeerRequestId { return }
     if earlyResponseOpens.count >= Self.maxEarlyResponseOpens {
       await fail(RPCError.invalidMessage("Too many response streams opened early"))
       return
@@ -540,6 +629,8 @@ public actor RPC {
     case .stream(let msg):
       if msg.id == 0 { return "Stream message with id 0" }
       if !Self.validStreamFlags.contains(msg.flags) { return "Invalid stream flags" }
+    case .cancel(let msg):
+      if msg.id == 0 { return "Cancel with id 0" }
     }
     return nil
   }
@@ -580,7 +671,6 @@ public actor RPC {
     case .request(let req) where req.id == 0:
       Task { await deliver(IncomingEvent(command: req.command, data: req.data)) }
     case .request(let req):
-      unansweredPeerRequests.insert(req.id)
       highestPeerRequestId = max(highestPeerRequestId, req.id)
       // The request stream is only opened, and the OPEN acked, once the
       // handler reads it. Until then its frames are dropped, as in JS.
@@ -589,7 +679,10 @@ public actor RPC {
         ? IncomingStream(requestId: req.id, mask: StreamFlag.request, rpc: self) : nil
       let request = IncomingRequest(
         id: req.id, command: req.command, data: req.data, rpc: self, requestStream: body)
-      Task { await deliver(request) }
+      unansweredPeerRequests[req.id] = request
+      handlerTasks[req.id] = (request, Task { await deliver(request) })
+    case .cancel(let msg):
+      await handleCancel(msg)
     case .stream(let s):
       await handleStreamMessage(s)
     case .response(let resp) where resp.stream == StreamFlag.open:

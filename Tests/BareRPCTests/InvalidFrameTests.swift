@@ -124,6 +124,10 @@ private func expectInvalidMessage(_ peer: Peer, sourceLocation: SourceLocation =
       "request with an unknown stream",
       Messages.encodeRequest(id: 1, command: 1, stream: 2, data: nil)
     ),
+    (
+      "cancel with id 0",
+      Messages.encodeCancel(id: 0, error: RPCRemoteError(message: "x", code: "x"))
+    ),
   ]
 
   @Test(arguments: violations) func protocolViolationFailsTheConnection(

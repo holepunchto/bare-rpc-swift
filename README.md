@@ -106,6 +106,31 @@ An `IncomingStream` asks the peer to pause once it buffers `highWaterMark` bytes
 
 The body of a request and the reply of `streamRequest(command:)` can each be read once. Calling `createRequestStream()` or `response()` again throws `RPCError.alreadyReceived`. Read an `IncomingStream` with `for try await`.
 
+## Cancellation
+
+Cancelling the task that waits for an answer cancels the request. This applies to `request(_:data:timeout:)`, `requestWithResponseStream(command:data:)`, `createBidirectionalStream(command:)`, and the `response` closure of `streamRequest(command:)`. The waiting call throws `CancellationError`, the body stream of the request fails with it, and the peer is told to stop handling the request. Once the answer has arrived, cancelling does nothing, and a body stream that is still open stays open, so end or destroy it to stop it. A task that is already cancelled sends no request at all.
+
+Reading an `IncomingStream` is cancellable too. If the task that waits for the next chunk is cancelled, the iteration throws `CancellationError`. For the reply stream of `requestWithResponseStream(command:data:)` or `createBidirectionalStream(command:)`, this also cancels the request in the same way, as long as the reply has not ended yet. Once it has ended, cancelling does nothing. For the body of a request of the peer, the read just stops, and nothing is sent to the peer.
+
+`request(_:data:timeout:)` also takes a `timeout` in seconds. If no reply arrives in time, the request is cancelled and the call throws `RPCError.timeout`:
+
+```swift
+let reply = try await rpc.request(1, data: Data("ping".utf8), timeout: 5)
+```
+
+On the answering side, a cancel of the peer cancels the task of the handler, so `Task.isCancelled`, `Task.checkCancellation()` and cancellable calls such as `Task.sleep` see it. `cancellationError` holds the `message`, `code` and `errno` that the peer cancelled with, with the code `CANCELLED` or `TIMEOUT` when the peer is another bare-rpc. The streams of the request end as if the peer had destroyed them with that error: reading the body throws it, and writes to the reply stream are dropped. Answering the request sends nothing:
+
+```swift
+router.on(request: 1) { request in
+  let result = try await search(request.data)  // Throws once the peer cancels
+  return result
+}
+```
+
+When the session ends, the tasks of the request and event handlers that are still running are cancelled too.
+
+Cancelling a request needs a peer that supports it. A peer without support fails the session with `RPCError.unknownMessage` when it receives a cancel.
+
 ## Termination
 
 The session ends with `RPCError.channelClosed` when you call `close()` or the transport finishes. It fails with an error instead when:
@@ -115,7 +140,7 @@ The session ends with `RPCError.channelClosed` when you call `close()` or the tr
 - An event handler throws, with that error.
 - The peer sends a bad frame, as described under [Untrusted peers](#untrusted-peers).
 
-Pending requests then throw the error, and so do later requests. Open incoming streams fail with it, and writes to open outgoing streams throw it. Events sent after the end are dropped.
+Pending requests then throw the error, and so do later requests. Open incoming streams fail with it, and writes to open outgoing streams throw it. The tasks of running request and event handlers are cancelled, and a handler that calls `close()` itself sees the cancellation once `close()` returns. Events sent after the end are dropped.
 
 The session then stops reading and closes the transport. If it ended with `RPCError.channelClosed`, it first writes the frames already queued. Otherwise it drops them.
 
@@ -135,7 +160,7 @@ do {
 
 - `frameTooLarge`: The frame, with its length prefix, is longer than `maxFrameSize`. This is checked as soon as the length prefix arrives, before the rest of the frame is read.
 - `unknownMessage`: The frame has a message type that `RPC` does not know.
-- `invalidMessage`: The frame cannot be decoded, the transport ends partway through a frame, or the frame is one that a valid peer never sends. Examples are a response or stream message with an id of 0, a stream message with an invalid set of flags, and a new request that reuses the id of a request that is still in flight.
+- `invalidMessage`: The frame cannot be decoded, the transport ends partway through a frame, or the frame is one that a valid peer never sends. Examples are a response, stream or cancel message with an id of 0, a stream message with an invalid set of flags, and a new request that reuses the id of a request that is still in flight.
 - `streamOverflow`: An incoming stream holds more than `maxBufferedBytes` bytes that have not been read. This only happens when the peer keeps sending after it was asked to pause.
 
 A frame that refers to a request or stream that has already finished, or that was never known, is ignored. The same goes for frames that arrive for a stream that has already ended or been destroyed.

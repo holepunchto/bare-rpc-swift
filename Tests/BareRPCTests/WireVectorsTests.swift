@@ -72,6 +72,15 @@ import Testing
       } else {
         Vectors.expectPayload(stream.data, descriptor, note)
       }
+
+    case .cancel(let cancel):
+      #expect(descriptor["type"] as? Int == 4, "\(note): is a cancel")
+      #expect(cancel.id == UInt(descriptor["id"] as! Int), "\(note): id")
+
+      let expected = descriptor["error"] as! [String: Any]
+      #expect(cancel.error.message == expected["message"] as? String, "\(note): error message")
+      #expect(cancel.error.code == expected["code"] as? String, "\(note): error code")
+      #expect(cancel.error.errno == expected["errno"] as? Int, "\(note): error errno")
     }
   }
 

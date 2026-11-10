@@ -14,11 +14,18 @@ public final class IncomingRequest: @unchecked Sendable {
   private let lock = NSLock()
   private var received = false
   private var answered = false
+  private var cancellation: RPCRemoteError?
 
   /// Whether the request has been answered with ``reply(_:)``,
   /// ``reject(_:code:errno:)`` or ``createResponseStream()``. A request can
   /// only be answered once.
   public var sent: Bool { lock.withLock { answered } }
+
+  /// The error that the peer cancelled the request with, or `nil` if it has
+  /// not. Once the peer has cancelled the request, the task of its handler is
+  /// cancelled, and its streams end as if the peer had destroyed them with
+  /// this error. Answering it sends nothing.
+  public var cancellationError: RPCRemoteError? { lock.withLock { cancellation } }
 
   /// Whether the request has a streamed body, which
   /// ``createRequestStream()`` returns.
@@ -35,7 +42,7 @@ public final class IncomingRequest: @unchecked Sendable {
       received = true
     }
     guard let stream = unopenedRequestStream else { return nil }
-    await rpc?.openRequestStream(stream)
+    await rpc?.openRequestStream(stream, for: self)
     return stream
   }
 
@@ -50,14 +57,14 @@ public final class IncomingRequest: @unchecked Sendable {
   /// - Throws: `RPCError.alreadySent` if the request has already been answered.
   public func reply(_ data: Data? = nil) async throws {
     try markSent()
-    await rpc?.answer(id, Messages.encodeResponse(id: id, data: data))
+    await rpc?.answer(self, Messages.encodeResponse(id: id, data: data))
   }
 
   /// - Throws: `RPCError.alreadySent` if the request has already been answered.
   public func reject(_ message: String, code: String = "", errno: Int = 0) async throws {
     try markSent()
     await rpc?.answer(
-      id, Messages.encodeErrorResponse(id: id, message: message, code: code, errno: errno))
+      self, Messages.encodeErrorResponse(id: id, message: message, code: code, errno: errno))
   }
 
   /// - Throws: `RPCError.alreadySent` if the request has already been answered,
@@ -68,8 +75,12 @@ public final class IncomingRequest: @unchecked Sendable {
     let stream = OutgoingStream(requestId: id, mask: StreamFlag.response, rpc: rpc)
     lock.withLock { responseStream = stream }
     await rpc.registerResponseStream(
-      stream, Messages.encodeResponse(id: id, stream: StreamFlag.open, data: nil))
+      stream, Messages.encodeResponse(id: id, stream: StreamFlag.open, data: nil), for: self)
     return stream
+  }
+
+  func cancel(_ error: RPCRemoteError) {
+    lock.withLock { cancellation = error }
   }
 
   func rejectUnknownCommand() async throws {

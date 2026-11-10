@@ -106,6 +106,13 @@ public actor OutgoingStream {
     close(failure: error)
   }
 
+  // Closes the stream without sending any frame, as the peer has already
+  // dropped its end.
+  func drop() {
+    guard !isClosed else { return }
+    close(failure: nil)
+  }
+
   private func close(failure: Error?) {
     let endCalled = if case .ending = phase { true } else { false }
     phase = .closed(failure: failure, endCalled: endCalled)

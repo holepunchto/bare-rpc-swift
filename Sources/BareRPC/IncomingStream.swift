@@ -139,7 +139,7 @@ public actor IncomingStream: AsyncSequence {
         head = 0
       }
       bufferedBytes -= data.count
-      if bufferedBytes < highWaterMark && paused {
+      if bufferedBytes < highWaterMark && paused && !isFinished {
         paused = false
         rpc?.queue(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
       }

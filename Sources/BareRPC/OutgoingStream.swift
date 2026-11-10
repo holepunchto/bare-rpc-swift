@@ -106,8 +106,8 @@ public actor OutgoingStream {
     close(failure: error)
   }
 
-  // Closes the stream as a destroy of the peer would, but without telling the peer, which has
-  // already dropped its end.
+  // Closes the stream without sending any frame, as the peer has already
+  // dropped its end.
   func drop() {
     guard !isClosed else { return }
     close(failure: nil)

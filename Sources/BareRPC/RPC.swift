@@ -53,13 +53,14 @@ public actor RPC {
   private var outgoingStreams: [StreamKey: OutgoingStream] = [:]
 
   private var unansweredPeerRequests: [UInt: IncomingRequest] = [:]
-  // The task of each handler that is still running, which a cancel of the
-  // peer cancels.
-  private var handlerTasks: [UInt: (request: IncomingRequest, task: Task<Void, Never>)] = [:]
-  // The task of each event handler that is still running, keyed by the order
-  // of its event, as events have no id.
-  private var eventTasks: [Int: Task<Void, Never>] = [:]
-  private var nextEventTask = 0
+  // The task of each request and event handler that is still running, keyed
+  // by the order of its message, as the peer may reuse the id of a request
+  // whose handler still runs, and events have no id.
+  private var handlerTasks: [Int: Task<Void, Never>] = [:]
+  private var nextHandlerTask = 0
+  // The latest request of each id whose handler still runs, which a cancel of
+  // the peer cancels.
+  private var runningRequests: [UInt: (request: IncomingRequest, task: Task<Void, Never>)] = [:]
   private var highestPeerRequestId: UInt = 0
   // Response streams that the peer opened before this side created them,
   // which a JS peer does as soon as it reads a reply as a stream.
@@ -425,14 +426,10 @@ public actor RPC {
     outgoingStreams.removeAll()
     unansweredPeerRequests.removeAll()
     earlyResponseOpens.removeAll()
+    runningRequests.removeAll()
     let drainedHandlers = handlerTasks.values
     handlerTasks.removeAll()
-    for handler in drainedHandlers {
-      handler.task.cancel()
-    }
-    let drainedEvents = eventTasks.values
-    eventTasks.removeAll()
-    for task in drainedEvents {
+    for task in drainedHandlers {
       task.cancel()
     }
     for answer in drainedAwaiting {
@@ -531,10 +528,11 @@ public actor RPC {
 
   var earlyResponseOpenCount: Int { earlyResponseOpens.count }
 
-  private func deliver(_ request: IncomingRequest) async {
+  private func deliver(_ request: IncomingRequest, key: Int) async {
     defer {
-      if handlerTasks[request.id]?.request === request {
-        handlerTasks.removeValue(forKey: request.id)
+      handlerTasks.removeValue(forKey: key)
+      if runningRequests[request.id]?.request === request {
+        runningRequests.removeValue(forKey: request.id)
       }
     }
     do {
@@ -545,7 +543,7 @@ public actor RPC {
   }
 
   private func deliver(_ event: IncomingEvent, key: Int) async {
-    defer { eventTasks.removeValue(forKey: key) }
+    defer { handlerTasks.removeValue(forKey: key) }
     do {
       try await handler.handle(event)
     } catch {
@@ -574,9 +572,10 @@ public actor RPC {
   // A request whose handler still runs is cancelled even once it has been
   // answered, as the handler may still open its body or reply stream.
   private func handleCancel(_ msg: CancelMessage) async {
-    (handlerTasks[msg.id]?.request ?? unansweredPeerRequests[msg.id])?.cancel(msg.error)
+    let running = runningRequests[msg.id]
+    (running?.request ?? unansweredPeerRequests[msg.id])?.cancel(msg.error)
     answerPeerRequest(msg.id)
-    handlerTasks[msg.id]?.task.cancel()
+    running?.task.cancel()
     await incomingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.request))?
       .abort(msg.error)
     await outgoingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.response))?
@@ -704,9 +703,9 @@ public actor RPC {
 
     switch message {
     case .request(let req) where req.id == 0:
-      let key = nextEventTask
-      nextEventTask += 1
-      eventTasks[key] = Task {
+      let key = nextHandlerTask
+      nextHandlerTask += 1
+      handlerTasks[key] = Task {
         await deliver(IncomingEvent(command: req.command, data: req.data), key: key)
       }
     case .request(let req):
@@ -719,7 +718,11 @@ public actor RPC {
       let request = IncomingRequest(
         id: req.id, command: req.command, data: req.data, rpc: self, requestStream: body)
       unansweredPeerRequests[req.id] = request
-      handlerTasks[req.id] = (request, Task { await deliver(request) })
+      let key = nextHandlerTask
+      nextHandlerTask += 1
+      let task = Task { await deliver(request, key: key) }
+      handlerTasks[key] = task
+      runningRequests[req.id] = (request, task)
     case .cancel(let msg):
       await handleCancel(msg)
     case .stream(let s):

@@ -176,6 +176,7 @@ public actor IncomingStream: AsyncSequence {
     self.waiter = nil
     if mask == StreamFlag.response {
       isFinished = true
+      pendingError = CancellationError()
       await rpc?.cancelResponseStream(self)
     }
     waiter.resume(throwing: CancellationError())

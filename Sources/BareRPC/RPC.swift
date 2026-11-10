@@ -232,7 +232,7 @@ public actor RPC {
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
     let timer = timeout.flatMap { startTimeout(id, after: $0) }
     defer { timer?.cancel() }
-    return try await cancellable(id) {
+    return try await Self.cancellable(self, id) {
       try await withCheckedThrowingContinuation { continuation in
         awaiting[id] = .reply(continuation)
         queue(frame)
@@ -277,13 +277,10 @@ public actor RPC {
       if received.set() {
         throw RPCError.alreadyReceived("Response is already being received")
       }
-      let rpc = self
-      return try await withTaskCancellationHandler {
+      return try await Self.cancellable(self, id) {
         for try await value in channel { return value }
         try Task.checkCancellation()
         return nil
-      } onCancel: {
-        Task { await rpc?.cancelRequest(id) }
       }
     }
     return (outgoing, response)
@@ -300,7 +297,7 @@ public actor RPC {
     let id = try nextId()
     let outgoing = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(outgoing)
-    let incoming = try await cancellable(id) {
+    let incoming = try await Self.cancellable(self, id) {
       try await withCheckedThrowingContinuation { continuation in
         awaiting[id] = .stream(continuation)
         queue(
@@ -321,7 +318,7 @@ public actor RPC {
     try Task.checkCancellation()
     let id = try nextId()
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
-    return try await cancellable(id) {
+    return try await Self.cancellable(self, id) {
       try await withCheckedThrowingContinuation { continuation in
         awaiting[id] = .stream(continuation)
         queue(frame)
@@ -334,10 +331,15 @@ public actor RPC {
     message: "Request was cancelled", code: "CANCELLED")
   private static let timedOut = RPCRemoteError(message: "Request timed out", code: "TIMEOUT")
 
-  private func cancellable<T>(_ id: UInt, _ operation: () async throws -> T) async throws -> T {
-    try await withTaskCancellationHandler(operation: operation) {
-      Task { await self.cancelRequest(id) }
-    }
+  private static func cancellable<T>(
+    _ rpc: RPC?, _ id: UInt, isolation: isolated (any Actor)? = #isolation,
+    _ operation: () async throws -> T
+  ) async throws -> T {
+    try await withTaskCancellationHandler(
+      operation: operation,
+      onCancel: { [weak rpc] in
+        Task { await rpc?.cancelRequest(id, error: CancellationError(), reason: Self.cancelled) }
+      }, isolation: isolation)
   }
 
   // The longest timeout whose nanoseconds fit in a `UInt64`.
@@ -354,9 +356,7 @@ public actor RPC {
   }
 
   // Only a request that still waits for its answer is cancelled.
-  private func cancelRequest(
-    _ id: UInt, error: Error = CancellationError(), reason: RPCRemoteError = RPC.cancelled
-  ) async {
+  private func cancelRequest(_ id: UInt, error: Error, reason: RPCRemoteError) async {
     guard let answer = awaiting.removeValue(forKey: id) else { return }
     answer.fail(error)
     await abandonRequest(id, error: error, reason: reason)
@@ -523,11 +523,13 @@ public actor RPC {
       return
     }
     // A request whose id the peer has reused no longer owns its body.
-    guard runningRequests[request.id]?.request === request || isUnanswered(request) else {
+    let key = StreamKey(id: stream.requestId, mask: StreamFlag.request)
+    let owner = runningRequests[request.id]?.request ?? unansweredPeerRequests[request.id]
+    if owner.map({ $0 !== request }) ?? false || incomingStreams[key] != nil {
       await stream.abort(RPCError.channelClosed)
       return
     }
-    incomingStreams[StreamKey(id: stream.requestId, mask: StreamFlag.request)] = stream
+    incomingStreams[key] = stream
     queue(
       Messages.encodeStream(id: stream.requestId, flags: StreamFlag.request | StreamFlag.open))
   }
@@ -545,6 +547,8 @@ public actor RPC {
   }
 
   var earlyResponseOpenCount: Int { earlyResponseOpens.count }
+
+  var handlerTaskCount: Int { handlerTasks.count }
 
   private func deliver(_ request: IncomingRequest, key: Int) async {
     defer {

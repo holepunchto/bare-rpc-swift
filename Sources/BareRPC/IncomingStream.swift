@@ -2,6 +2,11 @@ import Foundation
 
 /// The body of a request or response that the peer sends, read by iterating
 /// it.
+///
+/// Cancelling the task that waits for the next chunk makes the iteration throw
+/// `CancellationError`. For the reply of a request of this side, it also
+/// cancels the request, unless the reply has already ended. The body of a
+/// request of the peer is left as it is and can still be read.
 public actor IncomingStream: AsyncSequence {
   public typealias Element = Data
 
@@ -27,6 +32,9 @@ public actor IncomingStream: AsyncSequence {
   private var pendingError: Error?
   private var paused = false
   private var waiter: CheckedContinuation<Data?, Error>?
+  // Counts the waits for a chunk, so that a late cancellation of one wait
+  // can't end a later one.
+  private var waits = 0
 
   init(
     requestId: UInt, mask: UInt, rpc: RPC,
@@ -152,8 +160,24 @@ public actor IncomingStream: AsyncSequence {
     if isFinished {
       return nil
     }
-    return try await withCheckedThrowingContinuation { cont in
-      self.waiter = cont
+    waits += 1
+    let wait = waits
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { cont in
+        self.waiter = cont
+      }
+    } onCancel: {
+      Task { await self.cancelWait(wait) }
     }
+  }
+
+  private func cancelWait(_ wait: Int) async {
+    guard wait == waits, let waiter else { return }
+    self.waiter = nil
+    if mask == StreamFlag.response {
+      isFinished = true
+      await rpc?.cancelResponseStream(self)
+    }
+    waiter.resume(throwing: CancellationError())
   }
 }

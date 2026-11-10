@@ -110,6 +110,8 @@ The body of a request and the reply of `streamRequest(command:)` can each be rea
 
 Cancelling the task that waits for an answer cancels the request. This applies to `request(_:data:timeout:)`, `requestWithResponseStream(command:data:)`, `createBidirectionalStream(command:)`, and the `response` closure of `streamRequest(command:)`. The waiting call throws `CancellationError`, the body stream of the request fails with it, and the peer is told to stop handling the request. Once the answer has arrived, cancelling does nothing, and a body stream that is still open stays open, so end or destroy it to stop it. A task that is already cancelled sends no request at all.
 
+Reading an `IncomingStream` is cancellable too. If the task that waits for the next chunk is cancelled, the iteration throws `CancellationError`. For the reply stream of `requestWithResponseStream(command:data:)` or `createBidirectionalStream(command:)`, this also cancels the request in the same way, as long as the reply has not ended yet. Once it has ended, cancelling does nothing. For the body of a request of the peer, the read just stops, and nothing is sent to the peer.
+
 `request(_:data:timeout:)` also takes a `timeout` in seconds. If no reply arrives in time, the request is cancelled and the call throws `RPCError.timeout`:
 
 ```swift

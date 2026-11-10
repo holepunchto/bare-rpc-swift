@@ -62,7 +62,9 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
     }
 
     await #expect(throws: CancellationError.self) { try await task.value }
-    #expect(pair.clientSide.sentFrames.isEmpty)
+    await pair.client.event(9)
+    #expect(try await waitUntil { !pair.clientSide.sentRequests.isEmpty })
+    #expect(pair.clientSide.sentFrames.count == 1)
   }
 
   @Test func cancellingAStreamedRequestFailsTheStreamsOfBothEnds() async throws {
@@ -109,8 +111,9 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
     }
 
     #expect(try await waitUntil { returned.value == 3 })
-    try await streams.value[0].write(Data([1]))
-    #expect(await streams.value[0].isEnded)
+    let stream = try #require(streams.value.first)
+    try await stream.write(Data([1]))
+    #expect(await stream.isEnded)
     await rpc.event(9)
     #expect(try await waitUntil { !peer.sentRequests.isEmpty })
     #expect(peer.sentFrames.count == 1)
@@ -166,7 +169,7 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
 
     #expect(try await waitUntil { observed.value != nil })
     #expect(observed.value == cancel)
-    #expect(await stream.value!.isEnded)
+    #expect(try await #require(stream.value).isEnded)
     #expect(await rpc.trackedStateCount == 0)
     #expect(peer.sentStreams.isEmpty)
   }
@@ -193,7 +196,7 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
     await rpc.receive(Messages.encodeCancel(id: 1, error: cancel))
     #expect(try await waitUntil { gate.value != nil })
     await rpc.receive(Messages.encodeRequest(id: 1, command: 2, data: nil))
-    gate.value!.resume()
+    try #require(gate.value).resume()
 
     #expect(try await waitUntil { peer.sentResponses.count == 1 })
     guard case .success(let data) = peer.sentResponses.first?.result else {
@@ -226,7 +229,7 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
         id: 1, flags: StreamFlag.request | StreamFlag.data,
         data: Data(count: IncomingStream.defaultHighWaterMark)))
     await rpc.receive(Messages.encodeCancel(id: 1, error: cancel))
-    gate.value!.resume()
+    try #require(gate.value).resume()
 
     #expect(try await waitUntil { read.value })
     await rpc.event(9)
@@ -274,12 +277,224 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
 
     let task = Task {
       withUnsafeCurrentTask { $0?.cancel() }
-      return try? await response()
+      return try await response()
     }
-    _ = await task.value
-    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(try await task.value == Data([1]))
+    await rpc.event(9)
+    #expect(try await waitUntil { !peer.sentRequests.isEmpty })
 
     #expect(sentCancels(peer).isEmpty)
+  }
+
+  @Test func aRequestAnsweredWithinItsTimeoutSendsNoCancel() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+
+    let reply = Task { try await rpc.request(1, timeout: 0.05) }
+    #expect(try await waitUntil { peer.sentRequests.count == 1 })
+    await rpc.receive(Messages.encodeResponse(id: 1, data: Data([1])))
+    #expect(try await reply.value == Data([1]))
+
+    try await Task.sleep(nanoseconds: 100_000_000)
+    await rpc.event(9)
+    #expect(try await waitUntil { peer.sentRequests.count == 2 })
+    #expect(sentCancels(peer).isEmpty)
+  }
+
+  @Test func cancellingTheReaderOfAReplyStreamCancelsTheRequest() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+    let chunks = Locked<[Data]>([])
+    let failure = Locked<Error?>(nil)
+
+    let task = Task {
+      do {
+        let stream = try await rpc.requestWithResponseStream(command: 1)
+        for try await chunk in stream { chunks.append(chunk) }
+      } catch {
+        failure.value = error
+      }
+    }
+    #expect(try await waitUntil { peer.sentFrames.count == 2 })
+    await rpc.receive(Messages.encodeResponse(id: 1, stream: StreamFlag.open, data: nil))
+    await rpc.receive(
+      Messages.encodeStream(id: 1, flags: StreamFlag.response | StreamFlag.data, data: Data([1])))
+    #expect(try await waitUntil { chunks.value.count == 1 })
+    task.cancel()
+
+    try #require(try await waitUntil { failure.value != nil })
+    #expect(failure.value is CancellationError)
+    #expect(try await waitUntil { sentCancels(peer).count == 1 })
+    #expect(sentCancels(peer).first?.id == 1)
+    #expect(sentCancels(peer).first?.error.code == "CANCELLED")
+    await rpc.event(9)
+    #expect(try await waitUntil { peer.sentRequests.count == 2 })
+    #expect(peer.sentStreams.count == 1)
+    #expect(await rpc.trackedStateCount == 0)
+  }
+
+  @Test func cancellingTheReaderOfABidirectionalStreamDropsItsBody() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+
+    let opened = Task { try await rpc.createBidirectionalStream(command: 1) }
+    #expect(try await waitUntil { peer.sentFrames.count == 2 })
+    await rpc.receive(Messages.encodeResponse(id: 1, stream: StreamFlag.open, data: nil))
+    let (outgoing, incoming) = try await opened.value
+
+    let failure = Locked<Error?>(nil)
+    let task = Task {
+      do {
+        for try await _ in incoming {}
+      } catch {
+        failure.value = error
+      }
+    }
+    task.cancel()
+
+    try #require(try await waitUntil { failure.value != nil })
+    #expect(failure.value is CancellationError)
+    #expect(try await waitUntil { sentCancels(peer).count == 1 })
+    try #require(await outgoing.isEnded)
+    await #expect(throws: CancellationError.self) { try await outgoing.write(Data([1])) }
+    await rpc.event(9)
+    #expect(try await waitUntil { peer.sentRequests.count == 2 })
+    #expect(peer.sentStreams.count == 1)
+    #expect(await rpc.trackedStateCount == 0)
+  }
+
+  @Test func cancellingTheReaderOfAnEndedReplyStreamSendsNothing() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+
+    let opened = Task { try await rpc.requestWithResponseStream(command: 1) }
+    #expect(try await waitUntil { peer.sentFrames.count == 2 })
+    await rpc.receive(Messages.encodeResponse(id: 1, stream: StreamFlag.open, data: nil))
+    let stream = try await opened.value
+    await rpc.receive(
+      Messages.encodeStream(id: 1, flags: StreamFlag.response | StreamFlag.data, data: Data([1])))
+    await rpc.receive(Messages.encodeStream(id: 1, flags: StreamFlag.response | StreamFlag.end))
+
+    let task = Task {
+      withUnsafeCurrentTask { $0?.cancel() }
+      var chunks: [Data] = []
+      for try await chunk in stream { chunks.append(chunk) }
+      return chunks
+    }
+    #expect(try await task.value == [Data([1])])
+    await rpc.event(9)
+    #expect(try await waitUntil { peer.sentRequests.count == 2 })
+    #expect(sentCancels(peer).isEmpty)
+  }
+
+  @Test func cancellingTheReaderOfARequestBodyOnlyStopsTheRead() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+    let body = Locked<IncomingStream?>(nil)
+
+    peer.onRequest = { req in body.value = try await req.createRequestStream() }
+
+    await rpc.receive(Messages.encodeRequest(id: 1, command: 1, stream: StreamFlag.open, data: nil))
+    #expect(try await waitUntil { body.value != nil })
+    let stream = try #require(body.value)
+
+    let failure = Locked<Error?>(nil)
+    let reader = Task {
+      do {
+        for try await _ in stream {}
+      } catch {
+        failure.value = error
+      }
+    }
+    reader.cancel()
+    try #require(try await waitUntil { failure.value != nil })
+    #expect(failure.value is CancellationError)
+
+    await rpc.receive(
+      Messages.encodeStream(id: 1, flags: StreamFlag.request | StreamFlag.data, data: Data([1])))
+    await rpc.receive(Messages.encodeStream(id: 1, flags: StreamFlag.request | StreamFlag.end))
+    var chunks: [Data] = []
+    for try await chunk in stream { chunks.append(chunk) }
+    #expect(chunks == [Data([1])])
+    await rpc.event(9)
+    #expect(try await waitUntil { !peer.sentRequests.isEmpty })
+    #expect(sentCancels(peer).isEmpty)
+    #expect(peer.sentStreams.count == 1)
+  }
+
+  @Test func framesAfterOneThatFailsTheSessionAreNotHandled() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+    let started = Locked(false)
+    let cancelled = Locked(false)
+
+    peer.onRequest = { _ in
+      started.value = true
+      try? await Task.sleep(nanoseconds: 10_000_000_000)
+      cancelled.value = Task.isCancelled
+    }
+
+    await rpc.receive(
+      Messages.encodeCancel(id: 0, error: cancel)
+        + Messages.encodeRequest(id: 1, command: 1, data: nil))
+    await #expect(throws: RPCError.self) { try await rpc.wait() }
+
+    if try await waitUntil({ started.value }) {
+      #expect(try await waitUntil { cancelled.value })
+    }
+  }
+
+  @Test func aHandlerOfARequestWhoseIdWasReusedCannotOpenItsBody() async throws {
+    let peer = Capture()
+    let rpc = peer.rpc()
+    let gate = Locked<CheckedContinuation<Void, Never>?>(nil)
+    let staleError = Locked<Error?>(nil)
+    let fresh = Locked<IncomingStream?>(nil)
+
+    peer.onRequest = { req in
+      if req.command == 1 {
+        try await req.reply(nil)
+        await withCheckedContinuation { gate.value = $0 }
+        let body = try await req.createRequestStream()!
+        do {
+          for try await _ in body {}
+        } catch {
+          staleError.value = error
+        }
+      } else {
+        fresh.value = try await req.createRequestStream()
+      }
+    }
+
+    await rpc.receive(Messages.encodeRequest(id: 1, command: 1, stream: StreamFlag.open, data: nil))
+    #expect(try await waitUntil { gate.value != nil })
+    await rpc.receive(Messages.encodeRequest(id: 1, command: 2, stream: StreamFlag.open, data: nil))
+    #expect(try await waitUntil { fresh.value != nil })
+    try #require(gate.value).resume()
+
+    try #require(try await waitUntil { staleError.value != nil })
+    await rpc.receive(
+      Messages.encodeStream(id: 1, flags: StreamFlag.request | StreamFlag.data, data: Data([1])))
+    await rpc.receive(Messages.encodeStream(id: 1, flags: StreamFlag.request | StreamFlag.end))
+    var chunks: [Data] = []
+    for try await chunk in try #require(fresh.value) { chunks.append(chunk) }
+    #expect(chunks == [Data([1])])
+    #expect(peer.sentStreams.filter { $0.flags & StreamFlag.open != 0 }.count == 1)
+  }
+
+  @Test func aCancelHasTheBytesOfLibrpc() throws {
+    let error = RPCRemoteError(message: "Cancelled", code: "CANCELLED", errno: -1)
+    let frame =
+      Data([0x17, 0x00, 0x00, 0x00, 0x04, 0x01, 0x09]) + Data("Cancelled".utf8) + Data([0x09])
+      + Data("CANCELLED".utf8) + Data([0x01])
+    #expect(Messages.encodeCancel(id: 1, error: error) == frame)
+
+    guard case .cancel(let msg) = try Messages.decodeFrame(frame) else {
+      Issue.record("Expected a cancel")
+      return
+    }
+    #expect(msg.id == 1)
+    #expect(msg.error == error)
   }
 
   @Test func aRequestWithAnInfiniteTimeoutIsAnswered() async throws {

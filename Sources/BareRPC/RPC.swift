@@ -235,7 +235,7 @@ public actor RPC {
     return try await cancellable(id) {
       try await withCheckedThrowingContinuation { continuation in
         awaiting[id] = .reply(continuation)
-        sendData(frame)
+        queue(frame)
       }
     }
   }
@@ -252,7 +252,7 @@ public actor RPC {
     let id = try nextId()
     let stream = OutgoingStream(requestId: id, mask: StreamFlag.request, rpc: self)
     registerOutgoingStream(stream)
-    sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+    queue(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
     return stream
   }
 
@@ -270,7 +270,7 @@ public actor RPC {
     let channel = AsyncThrowingStream<Data?, Error> { continuation = $0 }
     awaiting[id] = .streamedReply(continuation)
 
-    sendData(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
+    queue(Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
 
     let received = ReceivedFlag()
     let response: @Sendable () async throws -> Data? = { [weak self] in
@@ -291,7 +291,8 @@ public actor RPC {
 
   /// Sends a request for `command` whose body and reply are both streamed,
   /// and returns both streams once the peer has opened its reply. Cancelling
-  /// the task that waits cancels the request.
+  /// the task that waits, or the task that reads the reply before it has
+  /// ended, cancels the request.
   public func createBidirectionalStream(command: UInt) async throws
     -> (outgoing: OutgoingStream, incoming: IncomingStream)
   {
@@ -302,9 +303,9 @@ public actor RPC {
     let incoming = try await cancellable(id) {
       try await withCheckedThrowingContinuation { continuation in
         awaiting[id] = .stream(continuation)
-        sendData(
+        queue(
           Messages.encodeRequest(id: id, command: command, stream: StreamFlag.open, data: nil))
-        sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
+        queue(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
       }
     }
     return (outgoing, incoming)
@@ -312,7 +313,8 @@ public actor RPC {
 
   /// Sends a request for `command` and returns the stream of its reply. A
   /// plain reply of the peer is read as a stream of at most one chunk.
-  /// Cancelling the task that waits for the stream cancels the request.
+  /// Cancelling the task that waits for the stream, or the task that reads it
+  /// before it has ended, cancels the request.
   public func requestWithResponseStream(command: UInt, data: Data? = nil) async throws
     -> IncomingStream
   {
@@ -322,8 +324,8 @@ public actor RPC {
     return try await cancellable(id) {
       try await withCheckedThrowingContinuation { continuation in
         awaiting[id] = .stream(continuation)
-        sendData(frame)
-        sendData(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
+        queue(frame)
+        queue(Messages.encodeStream(id: id, flags: StreamFlag.response | StreamFlag.open))
       }
     }
   }
@@ -357,7 +359,21 @@ public actor RPC {
   ) async {
     guard let answer = awaiting.removeValue(forKey: id) else { return }
     answer.fail(error)
-    sendData(Messages.encodeCancel(id: id, error: reason))
+    await abandonRequest(id, error: error, reason: reason)
+  }
+
+  // Only a reply stream that has not ended is cancelled.
+  func cancelResponseStream(_ stream: IncomingStream) async {
+    let key = StreamKey(id: stream.requestId, mask: StreamFlag.response)
+    guard incomingStreams[key] === stream else { return }
+    incomingStreams.removeValue(forKey: key)
+    await abandonRequest(stream.requestId, error: CancellationError(), reason: Self.cancelled)
+  }
+
+  // The peer drops its streams of the request once it reads the cancel, so
+  // those of this side are dropped without sending any frame.
+  private func abandonRequest(_ id: UInt, error: Error, reason: RPCRemoteError) async {
+    queue(Messages.encodeCancel(id: id, error: reason))
     await outgoingStreams.removeValue(forKey: StreamKey(id: id, mask: StreamFlag.request))?.abort(
       error)
   }
@@ -389,24 +405,18 @@ public actor RPC {
     return !failed
   }
 
-  // Frames sent while handling a frame of the peer are queued without waiting
-  // for them to be written, so that a transport that only drains as the peer
-  // reads can't stall the reading here.
-  func sendData(_ data: Data) {
-    guard !failed else { return }
-    writes.yield((data, nil))
-  }
-
-  // Queues a frame without hopping onto the actor, so that frames queued by
-  // another actor go out in the order that actor queued them. A hop from two
-  // tasks can reach the actor in either order, which would let a PAUSE and a
-  // RESUME swap. Once the session has ended, the frame is dropped.
+  // Queues a frame without waiting for it to be written, so that a transport
+  // that only drains as the peer reads can't stall the reading here. It
+  // doesn't hop onto the actor, so that frames queued by another actor go out
+  // in the order that actor queued them. A hop from two tasks can reach the
+  // actor in either order, which would let a PAUSE and a RESUME swap. Once the
+  // session has ended, the frame is dropped.
   nonisolated func queue(_ data: Data) {
     writes.yield((data, nil))
   }
 
   func send(_ data: Data, waiting: Bool) async {
-    if waiting { await sendAndWait(data) } else { sendData(data) }
+    if waiting { await sendAndWait(data) } else { queue(data) }
   }
 
   func sendAndWait(_ data: Data) async {
@@ -417,6 +427,8 @@ public actor RPC {
   private func fail(_ error: Error) async {
     guard !failed else { return }
     failureError = error
+    if case .channelClosed? = error as? RPCError {} else { dropsWrites = true }
+    writes.finish()
     buffer.removeAll()
     let drainedAwaiting = awaiting.values
     awaiting.removeAll()
@@ -429,9 +441,6 @@ public actor RPC {
     runningRequests.removeAll()
     let drainedHandlers = handlerTasks.values
     handlerTasks.removeAll()
-    for task in drainedHandlers {
-      task.cancel()
-    }
     for answer in drainedAwaiting {
       answer.fail(error)
     }
@@ -441,8 +450,11 @@ public actor RPC {
     for stream in drainedOutgoing {
       await stream.abort(error)
     }
-    if case .channelClosed? = error as? RPCError {} else { dropsWrites = true }
-    writes.finish()
+    // The streams fail first, so that a handler that reads one sees the error
+    // rather than its cancellation.
+    for task in drainedHandlers {
+      task.cancel()
+    }
     reading.cancel()
     let waiters = closeWaiters
     closeWaiters = []
@@ -494,12 +506,13 @@ public actor RPC {
       await stream.drop()
       return
     }
-    let key = StreamKey(id: stream.requestId, mask: stream.mask)
-    outgoingStreams[key] = stream
+    registerOutgoingStream(stream)
     if answerPeerRequest(stream.requestId) {
       await stream.acknowledge()
       // The peer may have cancelled the request while this waited.
-      guard outgoingStreams[key] === stream else { return }
+      guard outgoingStreams[StreamKey(id: stream.requestId, mask: stream.mask)] === stream else {
+        return
+      }
     }
     await sendAndWait(frame)
   }
@@ -509,8 +522,13 @@ public actor RPC {
       await stream.abort(error)
       return
     }
+    // A request whose id the peer has reused no longer owns its body.
+    guard runningRequests[request.id]?.request === request || isUnanswered(request) else {
+      await stream.abort(RPCError.channelClosed)
+      return
+    }
     incomingStreams[StreamKey(id: stream.requestId, mask: StreamFlag.request)] = stream
-    sendData(
+    queue(
       Messages.encodeStream(id: stream.requestId, flags: StreamFlag.request | StreamFlag.open))
   }
 
@@ -555,7 +573,7 @@ public actor RPC {
     switch awaiting[resp.id] {
     case .reply, .streamedReply:
       awaiting.removeValue(forKey: resp.id)?.fail(RPCError.unexpectedStream)
-      sendData(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.destroy))
+      queue(Messages.encodeStream(id: resp.id, flags: StreamFlag.response | StreamFlag.destroy))
       await outgoingStreams[StreamKey(id: resp.id, mask: StreamFlag.request)]?.release(
         error: RPCRemoteError(
           message: "Request was answered with a stream", code: "UNEXPECTED_STREAM"))
@@ -575,11 +593,13 @@ public actor RPC {
     let running = runningRequests[msg.id]
     (running?.request ?? unansweredPeerRequests[msg.id])?.cancel(msg.error)
     answerPeerRequest(msg.id)
-    running?.task.cancel()
     await incomingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.request))?
       .abort(msg.error)
     await outgoingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.response))?
       .drop()
+    // The body fails first, so that a handler that reads it sees the error of
+    // the peer rather than its cancellation.
+    running?.task.cancel()
   }
 
   private func handleStreamMessage(_ msg: StreamMessage) async {
@@ -683,6 +703,7 @@ public actor RPC {
   }()
 
   private func dispatchFrame(_ frame: Data) async {
+    guard !failed else { return }
     let message: DecodedMessage?
     do {
       message = try Messages.decodeFrame(frame)

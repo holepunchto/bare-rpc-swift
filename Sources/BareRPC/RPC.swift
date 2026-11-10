@@ -396,6 +396,14 @@ public actor RPC {
     writes.yield((data, nil))
   }
 
+  // Queues a frame without hopping onto the actor, so that frames queued by
+  // another actor go out in the order that actor queued them. A hop from two
+  // tasks can reach the actor in either order, which would let a PAUSE and a
+  // RESUME swap. Once the session has ended, the frame is dropped.
+  nonisolated func queue(_ data: Data) {
+    writes.yield((data, nil))
+  }
+
   func send(_ data: Data, waiting: Bool) async {
     if waiting { await sendAndWait(data) } else { sendData(data) }
   }

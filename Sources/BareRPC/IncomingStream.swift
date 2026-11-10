@@ -52,7 +52,7 @@ public actor IncomingStream: AsyncSequence {
     bufferedBytes += data.count
     if bufferedBytes >= highWaterMark && !paused {
       paused = true
-      await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.pause))
+      rpc?.queue(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.pause))
     }
     return bufferedBytes
   }
@@ -141,7 +141,7 @@ public actor IncomingStream: AsyncSequence {
       bufferedBytes -= data.count
       if bufferedBytes < highWaterMark && paused {
         paused = false
-        await rpc?.sendData(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
+        rpc?.queue(Messages.encodeStream(id: requestId, flags: mask | StreamFlag.resume))
       }
       return data
     }

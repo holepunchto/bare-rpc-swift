@@ -57,14 +57,14 @@ public final class IncomingRequest: @unchecked Sendable {
   /// - Throws: `RPCError.alreadySent` if the request has already been answered.
   public func reply(_ data: Data? = nil) async throws {
     try markSent()
-    await rpc?.answer(id, Messages.encodeResponse(id: id, data: data))
+    await rpc?.answer(self, Messages.encodeResponse(id: id, data: data))
   }
 
   /// - Throws: `RPCError.alreadySent` if the request has already been answered.
   public func reject(_ message: String, code: String = "", errno: Int = 0) async throws {
     try markSent()
     await rpc?.answer(
-      id, Messages.encodeErrorResponse(id: id, message: message, code: code, errno: errno))
+      self, Messages.encodeErrorResponse(id: id, message: message, code: code, errno: errno))
   }
 
   /// - Throws: `RPCError.alreadySent` if the request has already been answered,

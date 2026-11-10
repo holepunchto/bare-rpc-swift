@@ -125,7 +125,7 @@ router.on(request: 1) { request in
 }
 ```
 
-When the session ends, the tasks of the handlers that are still running are cancelled too.
+When the session ends, the tasks of the request and event handlers that are still running are cancelled too.
 
 Cancelling a request needs a peer that supports it. A peer without support fails the session with `RPCError.unknownMessage` when it receives a cancel.
 
@@ -138,7 +138,7 @@ The session ends with `RPCError.channelClosed` when you call `close()` or the tr
 - An event handler throws, with that error.
 - The peer sends a bad frame, as described under [Untrusted peers](#untrusted-peers).
 
-Pending requests then throw the error, and so do later requests. Open incoming streams fail with it, and writes to open outgoing streams throw it. The tasks of running handlers are cancelled. Events sent after the end are dropped.
+Pending requests then throw the error, and so do later requests. Open incoming streams fail with it, and writes to open outgoing streams throw it. The tasks of running request and event handlers are cancelled, and a handler that calls `close()` itself sees the cancellation once `close()` returns. Events sent after the end are dropped.
 
 The session then stops reading and closes the transport. If it ended with `RPCError.channelClosed`, it first writes the frames already queued. Otherwise it drops them.
 

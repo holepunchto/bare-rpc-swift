@@ -56,6 +56,10 @@ public actor RPC {
   // The task of each handler that is still running, which a cancel of the
   // peer cancels.
   private var handlerTasks: [UInt: (request: IncomingRequest, task: Task<Void, Never>)] = [:]
+  // The task of each event handler that is still running, keyed by the order
+  // of its event, as events have no id.
+  private var eventTasks: [Int: Task<Void, Never>] = [:]
+  private var nextEventTask = 0
   private var highestPeerRequestId: UInt = 0
   // Response streams that the peer opened before this side created them,
   // which a JS peer does as soon as it reads a reply as a stream.
@@ -212,17 +216,20 @@ public actor RPC {
   /// handling it.
   ///
   /// - Parameter timeout: The seconds to wait for the reply before the
-  ///   request is cancelled and ``RPCError/timeout`` is thrown.
+  ///   request is cancelled and ``RPCError/timeout`` is thrown. It must not be
+  ///   negative or NaN. A timeout too long to ever pass, such as `.infinity`,
+  ///   waits for the reply as if there were none.
   /// - Throws: The ``RPCRemoteError`` that the peer rejected the request with,
   ///   `CancellationError` if the task was cancelled, ``RPCError/timeout``, or
   ///   the error that ended the session.
   public func request(_ command: UInt, data: Data? = nil, timeout: TimeInterval? = nil)
     async throws -> Data?
   {
+    if let timeout { precondition(timeout >= 0, "timeout must not be negative or NaN") }
     try Task.checkCancellation()
     let id = try nextId()
     let frame = Messages.encodeRequest(id: id, command: command, data: data)
-    let timer = timeout.map { startTimeout(id, after: $0) }
+    let timer = timeout.flatMap { startTimeout(id, after: $0) }
     defer { timer?.cancel() }
     return try await cancellable(id) {
       try await withCheckedThrowingContinuation { continuation in
@@ -269,12 +276,13 @@ public actor RPC {
       if received.set() {
         throw RPCError.alreadyReceived("Response is already being received")
       }
+      let rpc = self
       return try await withTaskCancellationHandler {
         for try await value in channel { return value }
         try Task.checkCancellation()
         return nil
       } onCancel: {
-        Task { await self?.cancelRequest(id) }
+        Task { await rpc?.cancelRequest(id) }
       }
     }
     return (outgoing, response)
@@ -329,8 +337,12 @@ public actor RPC {
     }
   }
 
-  private func startTimeout(_ id: UInt, after timeout: TimeInterval) -> Task<Void, Never> {
-    Task {
+  // The longest timeout whose nanoseconds fit in a `UInt64`.
+  private static let maxTimeout = TimeInterval(UInt64.max / 1_000_000_000)
+
+  private func startTimeout(_ id: UInt, after timeout: TimeInterval) -> Task<Void, Never>? {
+    guard timeout < Self.maxTimeout else { return nil }
+    return Task {
       guard (try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))) != nil else {
         return
       }
@@ -410,6 +422,11 @@ public actor RPC {
     for handler in drainedHandlers {
       handler.task.cancel()
     }
+    let drainedEvents = eventTasks.values
+    eventTasks.removeAll()
+    for task in drainedEvents {
+      task.cancel()
+    }
     for answer in drainedAwaiting {
       answer.fail(error)
     }
@@ -450,10 +467,14 @@ public actor RPC {
   }
 
   // A request that the peer has cancelled is no longer unanswered, so its
-  // answer is dropped.
-  func answer(_ id: UInt, _ frame: Data) async {
-    guard unansweredPeerRequests[id] != nil else { return }
-    answerPeerRequest(id)
+  // answer is dropped, even once the peer has reused its id.
+  private func isUnanswered(_ request: IncomingRequest) -> Bool {
+    unansweredPeerRequests[request.id] === request
+  }
+
+  func answer(_ request: IncomingRequest, _ frame: Data) async {
+    guard isUnanswered(request) else { return }
+    answerPeerRequest(request.id)
     await sendAndWait(frame)
   }
 
@@ -464,13 +485,16 @@ public actor RPC {
       await stream.abort(failureError)
       return
     }
-    if request.cancellationError != nil {
+    guard isUnanswered(request) else {
       await stream.drop()
       return
     }
-    registerOutgoingStream(stream)
+    let key = StreamKey(id: stream.requestId, mask: stream.mask)
+    outgoingStreams[key] = stream
     if answerPeerRequest(stream.requestId) {
       await stream.acknowledge()
+      // The peer may have cancelled the request while this waited.
+      guard outgoingStreams[key] === stream else { return }
     }
     await sendAndWait(frame)
   }
@@ -512,7 +536,8 @@ public actor RPC {
     }
   }
 
-  private func deliver(_ event: IncomingEvent) async {
+  private func deliver(_ event: IncomingEvent, key: Int) async {
+    defer { eventTasks.removeValue(forKey: key) }
     do {
       try await handler.handle(event)
     } catch {
@@ -538,8 +563,10 @@ public actor RPC {
     }
   }
 
+  // A request whose handler still runs is cancelled even once it has been
+  // answered, as the handler may still open its body or reply stream.
   private func handleCancel(_ msg: CancelMessage) async {
-    unansweredPeerRequests[msg.id]?.cancel(msg.error)
+    (handlerTasks[msg.id]?.request ?? unansweredPeerRequests[msg.id])?.cancel(msg.error)
     answerPeerRequest(msg.id)
     handlerTasks[msg.id]?.task.cancel()
     await incomingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.request))?
@@ -669,7 +696,11 @@ public actor RPC {
 
     switch message {
     case .request(let req) where req.id == 0:
-      Task { await deliver(IncomingEvent(command: req.command, data: req.data)) }
+      let key = nextEventTask
+      nextEventTask += 1
+      eventTasks[key] = Task {
+        await deliver(IncomingEvent(command: req.command, data: req.data), key: key)
+      }
     case .request(let req):
       highestPeerRequestId = max(highestPeerRequestId, req.id)
       // The request stream is only opened, and the OPEN acked, once the

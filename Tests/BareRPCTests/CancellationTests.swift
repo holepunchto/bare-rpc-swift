@@ -230,7 +230,6 @@ private let cancel = RPCRemoteError(message: "Gave up", code: "GAVE_UP", errno: 
 
     peer.onRequest = { req in
       if req.command == 1 {
-        try? await Task.sleep(nanoseconds: 10_000_000_000)
         await withCheckedContinuation { gate.value = $0 }
         try await req.reply(Data("stale".utf8))
         staleAnswered.value = true

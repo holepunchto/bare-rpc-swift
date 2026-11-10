@@ -371,7 +371,7 @@ public actor RPC {
   }
 
   // The peer drops its streams of the request once it reads the cancel, so
-  // those of this side are dropped without sending any frame.
+  // the body of this side is aborted without sending any frame.
   private func abandonRequest(_ id: UInt, error: Error, reason: RPCRemoteError) async {
     queue(Messages.encodeCancel(id: id, error: reason))
     await outgoingStreams.removeValue(forKey: StreamKey(id: id, mask: StreamFlag.request))?.abort(
@@ -524,8 +524,7 @@ public actor RPC {
     }
     // A request whose id the peer has reused no longer owns its body.
     let key = StreamKey(id: stream.requestId, mask: StreamFlag.request)
-    let owner = runningRequests[request.id]?.request ?? unansweredPeerRequests[request.id]
-    if owner.map({ $0 !== request }) ?? false || incomingStreams[key] != nil {
+    if (currentRequest(request.id) ?? request) !== request || incomingStreams[key] != nil {
       await stream.abort(RPCError.channelClosed)
       return
     }
@@ -550,9 +549,22 @@ public actor RPC {
 
   var handlerTaskCount: Int { handlerTasks.count }
 
-  private func deliver(_ request: IncomingRequest, key: Int) async {
-    defer {
+  @discardableResult
+  private func startHandler(_ deliver: @escaping @Sendable (isolated RPC) async -> Void)
+    -> Task<Void, Never>
+  {
+    let key = nextHandlerTask
+    nextHandlerTask += 1
+    let task = Task {
+      await deliver(self)
       handlerTasks.removeValue(forKey: key)
+    }
+    handlerTasks[key] = task
+    return task
+  }
+
+  private func deliver(_ request: IncomingRequest) async {
+    defer {
       if runningRequests[request.id]?.request === request {
         runningRequests.removeValue(forKey: request.id)
       }
@@ -564,8 +576,7 @@ public actor RPC {
     }
   }
 
-  private func deliver(_ event: IncomingEvent, key: Int) async {
-    defer { handlerTasks.removeValue(forKey: key) }
+  private func deliver(_ event: IncomingEvent) async {
     do {
       try await handler.handle(event)
     } catch {
@@ -594,8 +605,8 @@ public actor RPC {
   // A request whose handler still runs is cancelled even once it has been
   // answered, as the handler may still open its body or reply stream.
   private func handleCancel(_ msg: CancelMessage) async {
-    let running = runningRequests[msg.id]
-    (running?.request ?? unansweredPeerRequests[msg.id])?.cancel(msg.error)
+    let task = runningRequests[msg.id]?.task
+    currentRequest(msg.id)?.cancel(msg.error)
     answerPeerRequest(msg.id)
     await incomingStreams.removeValue(forKey: StreamKey(id: msg.id, mask: StreamFlag.request))?
       .abort(msg.error)
@@ -603,7 +614,13 @@ public actor RPC {
       .drop()
     // The body fails first, so that a handler that reads it sees the error of
     // the peer rather than its cancellation.
-    running?.task.cancel()
+    task?.cancel()
+  }
+
+  // The latest request of an id whose handler still runs or that has not been
+  // answered.
+  private func currentRequest(_ id: UInt) -> IncomingRequest? {
+    runningRequests[id]?.request ?? unansweredPeerRequests[id]
   }
 
   private func handleStreamMessage(_ msg: StreamMessage) async {
@@ -728,11 +745,7 @@ public actor RPC {
 
     switch message {
     case .request(let req) where req.id == 0:
-      let key = nextHandlerTask
-      nextHandlerTask += 1
-      handlerTasks[key] = Task {
-        await deliver(IncomingEvent(command: req.command, data: req.data), key: key)
-      }
+      startHandler { await $0.deliver(IncomingEvent(command: req.command, data: req.data)) }
     case .request(let req):
       highestPeerRequestId = max(highestPeerRequestId, req.id)
       // The request stream is only opened, and the OPEN acked, once the
@@ -743,11 +756,7 @@ public actor RPC {
       let request = IncomingRequest(
         id: req.id, command: req.command, data: req.data, rpc: self, requestStream: body)
       unansweredPeerRequests[req.id] = request
-      let key = nextHandlerTask
-      nextHandlerTask += 1
-      let task = Task { await deliver(request, key: key) }
-      handlerTasks[key] = task
-      runningRequests[req.id] = (request, task)
+      runningRequests[req.id] = (request, startHandler { await $0.deliver(request) })
     case .cancel(let msg):
       await handleCancel(msg)
     case .stream(let s):
